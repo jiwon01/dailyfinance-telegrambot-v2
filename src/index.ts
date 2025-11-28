@@ -76,9 +76,10 @@ export default {
         return new Response('Failed to fetch market data', { status: 500 });
       }
 
-      // 텔레그램으로 응답
+      // 텔레그램으로 응답 (메시지를 보낸 채팅방으로 답변)
       const bot = createTelegramBot(env);
-      await bot.sendMarketDataMessage(username, marketData.name, marketData.value, marketData.change);
+      const chatId = message.chat.id.toString();
+      await bot.sendMarketDataMessage(username, marketData.name, marketData.value, marketData.change, chatId);
 
       return new Response('OK', { status: 200 });
     } catch (error) {

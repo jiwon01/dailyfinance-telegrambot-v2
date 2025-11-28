@@ -158,7 +158,8 @@ export class TelegramBot {
     username: string,
     marketName: string,
     value: string,
-    change?: ChangeInfo
+    change?: ChangeInfo,
+    chatId?: string
   ): Promise<TelegramResponse<TelegramMessage>> {
     const changeText = formatChange(change);
     const message = [
@@ -167,7 +168,7 @@ export class TelegramBot {
       `<a href="https://finance.naver.com"><i>자세히 보기</i></a>`,
     ].join('\n');
 
-    return this.sendMessage(message);
+    return this.sendMessage(message, {}, chatId);
   }
 
   /**
