@@ -51,13 +51,13 @@ export default {
 
     try {
       const update: TelegramUpdate = await request.json();
+      const message = update.message;
       
       // 메시지가 없으면 무시
-      if (!update.message?.text) {
+      if (!message?.text) {
         return new Response('OK', { status: 200 });
       }
 
-      const { message } = update;
       const command = message.text.trim();
       const username = message.from.username || message.from.first_name;
 
