@@ -1,0 +1,27 @@
+{
+  "name": "dailyfinance-telegrambot",
+  "version": "1.0.0",
+  "description": "일일 금융 시장 정보를 텔레그램으로 전송하는 Cloudflare Workers 봇",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": [
+    "cloudflare-workers",
+    "telegram-bot",
+    "finance"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20231121.0",
+    "typescript": "^5.3.2",
+    "wrangler": "^3.19.0"
+  },
+  "dependencies": {
+    "node-html-parser": "^6.1.12"
+  }
+}
+

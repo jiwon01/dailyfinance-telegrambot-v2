@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Wrangler
+.wrangler/
+
+# Environment variables (민감한 정보)
+.dev.vars
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build
+dist/
+
