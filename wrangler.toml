@@ -1,4 +1,4 @@
-name = "dailyfinance-telegrambot"
+name = "dailyfinance-telegrambot-v2"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
