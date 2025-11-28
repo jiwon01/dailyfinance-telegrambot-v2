@@ -4,7 +4,7 @@ Cloudflare Workers를 이용한 일일 금융 시장 정보 텔레그램 봇입�
 
 ## 기능
 
-- **자동 알림**: 매일 평일 오전 9시(KST)에 일일 시장 상황 자동 전송
+- **자동 알림**: 매일 평일 오후 5시(KST)에 일일 시장 상황 자동 전송
 - **수동 조회**: 텔레그램 명령어로 개별 시세 조회
 
 ### 지원 시세 정보
@@ -17,7 +17,15 @@ Cloudflare Workers를 이용한 일일 금융 시장 정보 텔레그램 봇입�
 | 달러 | `달러`, `usd`, `USD` |
 | 엔화 | `엔화`, `엔`, `jpy`, `JPY` |
 | 유로 | `유로`, `eur`, `EUR` |
-| 금 | `금`, `gold`, `GOLD` |
+| 파운드 | `파운드`, `gbp`, `GBP` |
+| 스위스프랑 | `스위스프랑`, `프랑`, `chf`, `CHF` |
+| 위안 | `위안`, `중국`, `cny`, `CNY` |
+
+### 특수 명령어
+
+| 명령어 | 설명 |
+|--------|------|
+| `now` | 차트 이미지와 함께 일일 브리핑 즉시 발송 |
 
 ## 설치 및 배포
 
@@ -69,12 +77,21 @@ npm run dev
 npm run tail
 ```
 
+### 테스트 엔드포인트
+
+배포된 Worker에 `GET /test` 요청을 보내면 일일 브리핑을 즉시 발송합니다:
+
+```bash
+curl https://dailyfinance-telegrambot.<YOUR_SUBDOMAIN>.workers.dev/test
+```
+
 ## 프로젝트 구조
 
 ```
 ├── src/
 │   ├── index.ts      # 메인 워커 (HTTP/Cron 핸들러)
-│   ├── scraper.ts    # 네이버 금융 스크래핑 모듈
+│   ├── scraper.ts    # 네이버 금융 API 스크래핑 모듈
+│   ├── chart.ts      # 차트 이미지 생성 모듈 (QuickChart.io)
 │   └── telegram.ts   # 텔레그램 API 모듈
 ├── wrangler.toml     # Cloudflare Workers 설정
 ├── tsconfig.json     # TypeScript 설정
@@ -94,10 +111,15 @@ npm run tail
 
 ```toml
 [triggers]
-crons = ["0 0 * * 1-5"]  # 평일 UTC 00:00 (KST 09:00)
+crons = ["0 8 * * 1-5"]  # 평일 UTC 08:00 (KST 17:00)
 ```
+
+## 데이터 소스
+
+- **주가 지수**: 네이버 금융 API
+- **환율**: 네이버 금융 API  
+- **차트**: QuickChart.io
 
 ## 라이센스
 
 MIT
-
