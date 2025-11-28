@@ -94,7 +94,8 @@ export default {
       const marketData = await getMarketData(marketType);
 
       if (!marketData) {
-        return new Response('Failed to fetch market data', { status: 500 });
+        await bot.sendMessage(`⚠️ 시세 정보를 가져오는데 실패했습니다. 잠시 후 다시 시도해주세요.`, {}, chatId);
+        return new Response('OK', { status: 200 });
       }
 
       // 텔레그램으로 응답 (메시지를 보낸 채팅방으로 답변)
@@ -103,7 +104,17 @@ export default {
       return new Response('OK', { status: 200 });
     } catch (error) {
       console.error('Webhook error:', error);
-      return new Response('Internal server error', { status: 500 });
+      // 오류 발생 시에도 200 반환 (텔레그램 웹훅이 재시도하지 않도록)
+      try {
+        const update: TelegramUpdate = await request.clone().json();
+        if (update.message?.chat?.id) {
+          const bot = createTelegramBot(env);
+          await bot.sendMessage(`⚠️ 요청 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.`, {}, update.message.chat.id.toString());
+        }
+      } catch {
+        // 오류 메시지 전송 실패 시 무시
+      }
+      return new Response('OK', { status: 200 });
     }
   },
 
