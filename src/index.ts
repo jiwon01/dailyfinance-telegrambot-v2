@@ -59,8 +59,14 @@ export default {
       }
 
       const command = message.text.trim().toLowerCase();
-      const username = message.from.username || message.from.first_name;
       const chatId = message.chat.id.toString();
+      
+      // from이 없는 경우 (채널 메시지, 익명 관리자 등)
+      if (!message.from) {
+        return new Response('OK', { status: 200 });
+      }
+      
+      const username = message.from.username || message.from.first_name;
       const bot = createTelegramBot(env);
 
       // "now" 명령어: 일일 브리핑 즉시 발송
