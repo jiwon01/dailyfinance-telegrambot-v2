@@ -13,3 +13,11 @@ crons = ["0 8 * * 1-5"]  # 평일 UTC 08:00 (KST 17:00)
 # 개발 환경 설정
 [env.dev]
 name = "dailyfinance-telegrambot-dev"
+
+[observability]
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
