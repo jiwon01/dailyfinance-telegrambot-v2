@@ -70,19 +70,6 @@ interface DomesticIndexResponse {
   }>;
 }
 
-interface WorldIndexResponse {
-  result: {
-    closePrice: string;
-    compareToPreviousClosePrice: string;
-    compareToPreviousPrice: {
-      code: string;
-      text: string;
-      name: string;
-    };
-    fluctuationsRatio: string;
-  };
-}
-
 // 환율 데이터
 interface ExchangeItem {
   exchangeCode: string;
@@ -188,8 +175,9 @@ export async function getKosdaq(): Promise<MarketSummaryItem> {
  */
 export async function getNasdaq(): Promise<MarketSummaryItem> {
   try {
-    const data = await fetchJson<WorldIndexResponse>(API_URLS.NASDAQ);
-    const item = data.result;
+    // 나스닥 API도 코스피/코스닥과 동일한 응답 구조 사용 (datas 배열)
+    const data = await fetchJson<DomesticIndexResponse>(API_URLS.NASDAQ);
+    const item = data.datas?.[0];
 
     if (!item) {
       return { value: null };
