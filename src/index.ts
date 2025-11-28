@@ -58,11 +58,26 @@ export default {
         return new Response('OK', { status: 200 });
       }
 
-      const command = message.text.trim();
+      const command = message.text.trim().toLowerCase();
       const username = message.from.username || message.from.first_name;
+      const chatId = message.chat.id.toString();
+      const bot = createTelegramBot(env);
+
+      // "now" 명령어: 일일 브리핑 즉시 발송
+      if (command === 'now') {
+        // 1. 차트 이미지 전송
+        const charts = await getAllChartUrls();
+        await bot.sendChartImages(charts, chatId);
+
+        // 2. 일일 시장 정보 전송
+        const marketSummary = await getDailyMarketSummary();
+        await bot.sendDailyMarketMessage(marketSummary, chatId);
+
+        return new Response('OK', { status: 200 });
+      }
 
       // 명령어 파싱
-      const marketType = parseCommand(command);
+      const marketType = parseCommand(message.text.trim());
 
       if (!marketType) {
         // 알 수 없는 명령어는 무시
@@ -77,8 +92,6 @@ export default {
       }
 
       // 텔레그램으로 응답 (메시지를 보낸 채팅방으로 답변)
-      const bot = createTelegramBot(env);
-      const chatId = message.chat.id.toString();
       await bot.sendMarketDataMessage(username, marketData.name, marketData.value, marketData.change, chatId);
 
       return new Response('OK', { status: 200 });

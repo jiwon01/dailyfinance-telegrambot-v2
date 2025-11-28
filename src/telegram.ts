@@ -125,9 +125,9 @@ export class TelegramBot {
   /**
    * 일일 시장 정보 메시지 전송
    */
-  async sendDailyMarketMessage(data: DailyMarketSummary): Promise<TelegramResponse<TelegramMessage>> {
+  async sendDailyMarketMessage(data: DailyMarketSummary, chatId?: string): Promise<TelegramResponse<TelegramMessage>> {
     const message = this.formatDailyMarketMessage(data);
-    return this.sendMessage(message);
+    return this.sendMessage(message, {}, chatId);
   }
 
   /**
@@ -199,13 +199,13 @@ export class TelegramBot {
   async sendChartImages(charts: {
     kospi: string | null;
     usd: string | null;
-  }): Promise<void> {
+  }, chatId?: string): Promise<void> {
     if (charts.kospi) {
-      await this.sendPhoto(charts.kospi, '<b>📈 코스피 7일 추이</b>');
+      await this.sendPhoto(charts.kospi, '<b>📈 코스피 7일 추이</b>', chatId);
     }
 
     if (charts.usd) {
-      await this.sendPhoto(charts.usd, '<b>💵 USD/KRW 환율 7일 추이</b>');
+      await this.sendPhoto(charts.usd, '<b>💵 USD/KRW 환율 7일 추이</b>', chatId);
     }
   }
 }
