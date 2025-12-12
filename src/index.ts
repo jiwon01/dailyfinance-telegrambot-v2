@@ -15,6 +15,15 @@ interface Env extends TelegramEnv {
   // 추가 환경변수가 필요하면 여기에 정의
 }
 
+function assertTelegramEnv(env: TelegramEnv): void {
+  if (!env.TELEGRAM_BOT_TOKEN) {
+    throw new Error('Missing TELEGRAM_BOT_TOKEN');
+  }
+  if (!env.TELEGRAM_CHAT_ID) {
+    throw new Error('Missing TELEGRAM_CHAT_ID');
+  }
+}
+
 export default {
   /**
    * HTTP 요청 핸들러 (텔레그램 웹훅 + 테스트 엔드포인트)
@@ -25,6 +34,7 @@ export default {
     // 테스트용 엔드포인트: GET /test
     if (request.method === 'GET' && url.pathname === '/test') {
       try {
+        assertTelegramEnv(env);
         const bot = createTelegramBot(env);
 
         // 1. 차트 이미지 전송
@@ -50,6 +60,7 @@ export default {
     }
 
     try {
+      assertTelegramEnv(env);
       const update: TelegramUpdate = await request.json();
       const message = update.message;
       
@@ -122,28 +133,36 @@ export default {
    * 스케줄 트리거 핸들러 (Cron)
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    console.log('Scheduled event triggered:', event.scheduledTime);
+    console.log('Scheduled event triggered:', new Date(event.scheduledTime).toISOString());
 
-    try {
-      const bot = createTelegramBot(env);
+    ctx.waitUntil((async () => {
+      try {
+        assertTelegramEnv(env);
+        const bot = createTelegramBot(env);
 
-      // 1. 차트 이미지 전송
-      const charts = await getAllChartUrls();
-      await bot.sendChartImages(charts);
-      console.log('Chart images sent');
+        const [charts, marketSummary] = await Promise.all([
+          getAllChartUrls(),
+          getDailyMarketSummary(),
+        ]);
 
-      // 2. 일일 시장 정보 전송
-      const marketSummary = await getDailyMarketSummary();
-      const result = await bot.sendDailyMarketMessage(marketSummary);
+        // 1. 차트 이미지 전송
+        await bot.sendChartImages(charts);
+        console.log('Chart images send attempted:', {
+          kospi: !!charts.kospi,
+          usd: !!charts.usd,
+        });
 
-      if (result.ok) {
-        console.log('Daily market message sent successfully');
-      } else {
-        console.error('Failed to send message:', result.description);
+        // 2. 일일 시장 정보 전송
+        const result = await bot.sendDailyMarketMessage(marketSummary);
+
+        if (result.ok) {
+          console.log('Daily market message sent successfully');
+        } else {
+          console.error('Failed to send daily market message:', result.description);
+        }
+      } catch (error) {
+        console.error('Scheduled task error:', error);
       }
-
-    } catch (error) {
-      console.error('Scheduled task error:', error);
-    }
+    })());
   },
 };
