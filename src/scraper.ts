@@ -10,6 +10,13 @@ const API_URLS = {
   EXCHANGE: 'https://m.stock.naver.com/front-api/marketIndex/exchange/new',
 } as const;
 
+const YAHOO_API_URLS = {
+  QUOTE: 'https://query1.finance.yahoo.com/v7/finance/quote',
+  SEARCH: 'https://query2.finance.yahoo.com/v1/finance/search',
+} as const;
+
+const YAHOO_SUPPORTED_TYPES = new Set(['EQUITY', 'INDEX', 'CRYPTOCURRENCY']);
+
 // 시세 타입 정의
 export type MarketType =
   | 'kospi'
@@ -56,6 +63,20 @@ export interface DailyMarketSummary {
   cny: MarketSummaryItem;
 }
 
+export interface YahooMarketData {
+  symbol: string;
+  name: string;
+  value: string;
+  change?: ChangeInfo;
+  sourceUrl: string;
+  assetType: 'stock' | 'index' | 'crypto' | 'other';
+}
+
+export type YahooLookupResult =
+  | { status: 'ok'; data: YahooMarketData }
+  | { status: 'not_found'; query: string }
+  | { status: 'error'; query: string; reason: string };
+
 // API 응답 타입 정의
 interface DomesticIndexResponse {
   datas: Array<{
@@ -88,6 +109,31 @@ interface ExchangeResponse {
   result: ExchangeItem[];
 }
 
+interface YahooQuoteItem {
+  symbol: string;
+  quoteType?: string;
+  shortName?: string;
+  longName?: string;
+  regularMarketPrice?: number;
+  regularMarketChange?: number;
+  regularMarketChangePercent?: number;
+}
+
+interface YahooQuoteResponse {
+  quoteResponse?: {
+    result?: YahooQuoteItem[];
+  };
+}
+
+interface YahooSearchItem {
+  symbol: string;
+  quoteType?: string;
+}
+
+interface YahooSearchResponse {
+  quotes?: YahooSearchItem[];
+}
+
 /**
  * API 호출 유틸리티
  */
@@ -104,6 +150,173 @@ async function fetchJson<T>(url: string): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+function formatYahooPrice(value: number): string {
+  const abs = Math.abs(value);
+  const maxFractionDigits = abs >= 1000 ? 2 : abs >= 1 ? 4 : 8;
+  return value.toLocaleString('en-US', { maximumFractionDigits: maxFractionDigits });
+}
+
+function toYahooAssetType(quoteType?: string): YahooMarketData['assetType'] {
+  if (quoteType === 'EQUITY') return 'stock';
+  if (quoteType === 'INDEX') return 'index';
+  if (quoteType === 'CRYPTOCURRENCY') return 'crypto';
+  return 'other';
+}
+
+function toYahooChangeInfo(change?: number, changePercent?: number): ChangeInfo | undefined {
+  if (!Number.isFinite(change) || !Number.isFinite(changePercent)) {
+    return undefined;
+  }
+
+  const direction: ChangeDirection = change! > 0 ? 'up' : change! < 0 ? 'down' : 'unchanged';
+
+  return {
+    direction,
+    value: formatYahooPrice(Math.abs(change!)),
+    percent: `${Math.abs(changePercent!).toFixed(2)}%`,
+  };
+}
+
+function toYahooMarketData(item: YahooQuoteItem): YahooMarketData | null {
+  if (!YAHOO_SUPPORTED_TYPES.has(item.quoteType || '')) {
+    return null;
+  }
+
+  if (!Number.isFinite(item.regularMarketPrice)) {
+    return null;
+  }
+
+  const symbol = item.symbol;
+  const baseName = item.longName || item.shortName || symbol;
+  const name = baseName === symbol ? symbol : `${baseName} (${symbol})`;
+
+  return {
+    symbol,
+    name,
+    value: formatYahooPrice(item.regularMarketPrice!),
+    change: toYahooChangeInfo(item.regularMarketChange, item.regularMarketChangePercent),
+    sourceUrl: `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}`,
+    assetType: toYahooAssetType(item.quoteType),
+  };
+}
+
+async function fetchYahooQuoteBySymbol(symbol: string): Promise<YahooLookupResult> {
+  const normalizedSymbol = symbol.trim();
+
+  if (!normalizedSymbol) {
+    return { status: 'not_found', query: symbol };
+  }
+
+  const url = `${YAHOO_API_URLS.QUOTE}?symbols=${encodeURIComponent(normalizedSymbol)}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json',
+      },
+    });
+
+    if (response.status === 404) {
+      return { status: 'not_found', query: normalizedSymbol };
+    }
+
+    if (!response.ok) {
+      return {
+        status: 'error',
+        query: normalizedSymbol,
+        reason: `Yahoo quote API failed: ${response.status}`,
+      };
+    }
+
+    const payload = await response.json() as YahooQuoteResponse;
+    const results = payload.quoteResponse?.result || [];
+    const exactMatch = results.find(item => item.symbol?.toUpperCase() === normalizedSymbol.toUpperCase());
+    const candidate = exactMatch || results[0];
+
+    if (!candidate) {
+      return { status: 'not_found', query: normalizedSymbol };
+    }
+
+    const parsed = toYahooMarketData(candidate);
+
+    if (!parsed) {
+      return { status: 'not_found', query: normalizedSymbol };
+    }
+
+    return { status: 'ok', data: parsed };
+  } catch (error) {
+    return {
+      status: 'error',
+      query: normalizedSymbol,
+      reason: `Yahoo quote API error: ${String(error)}`,
+    };
+  }
+}
+
+async function searchYahooSymbol(query: string): Promise<string | null> {
+  const url =
+    `${YAHOO_API_URLS.SEARCH}?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0&enableFuzzyQuery=true`;
+
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': 'application/json',
+    },
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new Error(`Yahoo search API failed: ${response.status}`);
+  }
+
+  const payload = await response.json() as YahooSearchResponse;
+  const quotes = payload.quotes || [];
+  const supported = quotes.filter(item => YAHOO_SUPPORTED_TYPES.has(item.quoteType || ''));
+
+  if (supported.length === 0) {
+    return null;
+  }
+
+  const exactMatch = supported.find(item => item.symbol.toUpperCase() === query.toUpperCase());
+  return (exactMatch || supported[0]).symbol;
+}
+
+export async function getYahooMarketData(query: string): Promise<YahooLookupResult> {
+  const trimmedQuery = query.trim();
+
+  if (!trimmedQuery) {
+    return { status: 'not_found', query };
+  }
+
+  const directLookup = await fetchYahooQuoteBySymbol(trimmedQuery.toUpperCase());
+  if (directLookup.status === 'ok') {
+    return directLookup;
+  }
+
+  if (directLookup.status === 'error') {
+    return directLookup;
+  }
+
+  try {
+    const symbol = await searchYahooSymbol(trimmedQuery);
+    if (!symbol) {
+      return { status: 'not_found', query: trimmedQuery };
+    }
+
+    return fetchYahooQuoteBySymbol(symbol);
+  } catch (error) {
+    return {
+      status: 'error',
+      query: trimmedQuery,
+      reason: `Yahoo search API error: ${String(error)}`,
+    };
+  }
 }
 
 /**
@@ -363,4 +576,15 @@ export function parseCommand(command: string): MarketType | null {
   };
 
   return commandMap[command] || null;
+}
+
+export function parseSearchCommand(command: string): string | null {
+  const trimmed = command.trim();
+
+  if (!trimmed.startsWith('?')) {
+    return null;
+  }
+
+  const query = trimmed.slice(1).trim();
+  return query.length > 0 ? query : null;
 }
