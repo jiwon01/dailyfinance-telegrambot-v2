@@ -26,7 +26,7 @@ Cloudflare Workers를 이용한 일일 금융 시장 정보 텔레그램 봇입�
 | 명령어 | 설명 |
 |--------|------|
 | `now` | 차트 이미지와 함께 일일 브리핑 즉시 발송 |
-| `?검색어` | Yahoo Finance 기반 전세계 주식/지수/가상화폐 조회 (예: `?AAPL`, `?^GSPC`, `?BTC-USD`) |
+| `?검색어` | Finnhub 기반 전세계 주식/지수/가상화폐 조회 (예: `?AAPL`, `?^GSPC`, `?BTC-USD`) |
 
 ## 설치 및 배포
 
@@ -46,6 +46,9 @@ npx wrangler secret put TELEGRAM_BOT_TOKEN
 
 # 텔레그램 채팅 ID 설정 (그룹 채팅 ID는 -로 시작)
 npx wrangler secret put TELEGRAM_CHAT_ID
+
+# Finnhub API 키 설정
+npx wrangler secret put FINNHUB_API_KEY
 ```
 
 ### 3. 배포
@@ -105,6 +108,7 @@ curl https://dailyfinance-telegrambot.<YOUR_SUBDOMAIN>.workers.dev/test
 |--------|------|------|
 | `TELEGRAM_BOT_TOKEN` | 텔레그램 봇 토큰 (@BotFather에서 발급) | ✅ |
 | `TELEGRAM_CHAT_ID` | 메시지를 받을 채팅 ID | ✅ |
+| `FINNHUB_API_KEY` | Finnhub API 키 | ✅ (`?검색어` 기능 사용 시) |
 
 ## 스케줄 설정
 
@@ -119,7 +123,7 @@ crons = ["0 8 * * 1-5"]  # 평일 UTC 08:00 (KST 17:00)
 
 - **주가 지수**: 네이버 금융 API
 - **환율**: 네이버 금융 API  
-- **전세계 주식/지수/가상화폐 검색**: Yahoo Finance Quote 웹페이지 파싱 (`https://finance.yahoo.com/quote/{SYMBOL}/`)
+- **전세계 주식/지수/가상화폐 검색**: Finnhub API (`/search`, `/quote`, `/stock/profile2`)
 - **차트**: QuickChart.io
 
 ## 라이센스

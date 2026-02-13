@@ -1,8 +1,6 @@
 /**
- * 네이버 금융 API에서 시세 정보를 가져오는 모듈
+ * 네이버 금융 + Finnhub API에서 시세 정보를 가져오는 모듈
  */
-
-import { parse as parseHtml } from 'node-html-parser';
 
 // API URL 상수
 const API_URLS = {
@@ -12,24 +10,12 @@ const API_URLS = {
   EXCHANGE: 'https://m.stock.naver.com/front-api/marketIndex/exchange/new',
 } as const;
 
+const FINNHUB_API_BASE = 'https://finnhub.io/api/v1';
+
 const DEFAULT_JSON_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   'Accept': 'application/json',
 } as const;
-
-const YAHOO_QUOTE_BASE_URL = 'https://finance.yahoo.com/quote';
-const YAHOO_PAGE_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'en-US,en;q=0.9',
-  'Referer': 'https://finance.yahoo.com/',
-} as const;
-
-const YAHOO_ASSET_TYPE_MAP: Record<string, YahooMarketData['assetType']> = {
-  EQUITY: 'stock',
-  INDEX: 'index',
-  CRYPTOCURRENCY: 'crypto',
-};
 
 // 시세 타입 정의
 export type MarketType =
@@ -77,7 +63,7 @@ export interface DailyMarketSummary {
   cny: MarketSummaryItem;
 }
 
-export interface YahooMarketData {
+export interface GlobalMarketData {
   symbol: string;
   name: string;
   value: string;
@@ -86,8 +72,8 @@ export interface YahooMarketData {
   assetType: 'stock' | 'index' | 'crypto' | 'other';
 }
 
-export type YahooLookupResult =
-  | { status: 'ok'; data: YahooMarketData }
+export type GlobalLookupResult =
+  | { status: 'ok'; data: GlobalMarketData }
   | { status: 'not_found'; query: string }
   | { status: 'error'; query: string; reason: string };
 
@@ -123,6 +109,42 @@ interface ExchangeResponse {
   result: ExchangeItem[];
 }
 
+interface FinnhubQuoteResponse {
+  c?: number;   // current
+  d?: number;   // change
+  dp?: number;  // percent change
+  pc?: number;  // previous close
+}
+
+interface FinnhubSearchItem {
+  description?: string;
+  displaySymbol?: string;
+  symbol?: string;
+  type?: string;
+}
+
+interface FinnhubSearchResponse {
+  count?: number;
+  result?: FinnhubSearchItem[];
+}
+
+interface FinnhubProfileResponse {
+  name?: string;
+  ticker?: string;
+}
+
+interface FinnhubQuoteResolved {
+  currentPrice: number;
+  change: number | null;
+  changePercent: number | null;
+}
+
+interface FinnhubCandidate {
+  symbol: string;
+  type?: string;
+  description?: string;
+}
+
 /**
  * API 호출 유틸리티
  */
@@ -138,346 +160,348 @@ async function fetchJson<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-function formatYahooPrice(value: number): string {
+function formatNumericValue(value: number): string {
   const abs = Math.abs(value);
   const maxFractionDigits = abs >= 1000 ? 2 : abs >= 1 ? 4 : 8;
   return value.toLocaleString('en-US', { maximumFractionDigits: maxFractionDigits });
 }
 
-function toYahooChangeInfo(change?: number, changePercent?: number): ChangeInfo | undefined {
+function toChangeInfo(change?: number | null, changePercent?: number | null): ChangeInfo | undefined {
   if (!Number.isFinite(change) || !Number.isFinite(changePercent)) {
     return undefined;
   }
 
-  const direction: ChangeDirection = change! > 0 ? 'up' : change! < 0 ? 'down' : 'unchanged';
+  const normalizedChange = change as number;
+  const normalizedPercent = changePercent as number;
+
+  const direction: ChangeDirection =
+    normalizedChange > 0 ? 'up' : normalizedChange < 0 ? 'down' : 'unchanged';
 
   return {
     direction,
-    value: formatYahooPrice(Math.abs(change!)),
-    percent: `${Math.abs(changePercent!).toFixed(2)}%`,
+    value: formatNumericValue(Math.abs(normalizedChange)),
+    percent: `${Math.abs(normalizedPercent).toFixed(2)}%`,
   };
 }
 
-function toYahooAssetType(quoteType?: string): YahooMarketData['assetType'] {
-  if (!quoteType) return 'other';
-  return YAHOO_ASSET_TYPE_MAP[quoteType] || 'other';
-}
+function toAssetType(type?: string, symbol?: string): GlobalMarketData['assetType'] {
+  const lowerType = (type || '').toLowerCase();
 
-interface YahooEmbeddedQuoteItem {
-  symbol?: string;
-  quoteType?: string;
-  shortName?: string;
-  longName?: string;
-  regularMarketPrice?: { raw?: number } | number;
-  regularMarketChange?: { raw?: number } | number;
-  regularMarketChangePercent?: { raw?: number } | number;
-}
-
-interface ParsedYahooQuotePayload {
-  symbol: string;
-  name?: string;
-  quoteType?: string;
-  price: number;
-  change: number | null;
-  changePercent: number | null;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function parseSignedNumber(raw: string | null | undefined): number | null {
-  if (!raw) return null;
-  const normalized = raw.replace(/[,%()]/g, '').trim();
-  if (!normalized) return null;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function toFiniteNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
+  if (lowerType.includes('crypto')) {
+    return 'crypto';
   }
-  if (typeof value === 'object' && value !== null && 'raw' in value) {
-    const raw = (value as { raw?: unknown }).raw;
-    if (typeof raw === 'number' && Number.isFinite(raw)) {
-      return raw;
+
+  if (lowerType.includes('index')) {
+    return 'index';
+  }
+
+  const upperSymbol = (symbol || '').toUpperCase();
+  if (upperSymbol.includes(':')) {
+    const exchange = upperSymbol.split(':')[0];
+    if (['BINANCE', 'COINBASE', 'BITFINEX', 'KRAKEN', 'BYBIT', 'HUOBI'].includes(exchange)) {
+      return 'crypto';
     }
   }
-  return null;
+
+  if (
+    lowerType.includes('stock') ||
+    lowerType.includes('equity') ||
+    lowerType.includes('etf') ||
+    lowerType.includes('fund') ||
+    lowerType.includes('adr')
+  ) {
+    return 'stock';
+  }
+
+  return 'other';
 }
 
-function toParsedYahooQuote(item: YahooEmbeddedQuoteItem): ParsedYahooQuotePayload | null {
-  if (!item.symbol) return null;
+function dedupeSymbols(symbols: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
 
-  const price = toFiniteNumber(item.regularMarketPrice);
-  if (price === null) return null;
+  for (const symbol of symbols) {
+    const normalized = symbol.trim().toUpperCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+
+  return result;
+}
+
+function buildDirectSymbolCandidates(query: string): string[] {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const upper = trimmed.toUpperCase();
+  const symbols = [upper];
+
+  if (upper.startsWith('$') && upper.length > 1) {
+    symbols.push(upper.slice(1));
+  }
+
+  // ex) BTC-USD -> BINANCE:BTCUSDT 후보도 같이 시도
+  const usdCryptoMatch = upper.match(/^([A-Z0-9]{2,12})-USD$/);
+  if (usdCryptoMatch) {
+    const base = usdCryptoMatch[1];
+    symbols.push(`BINANCE:${base}USDT`);
+    symbols.push(`COINBASE:${base}-USD`);
+  }
+
+  // ex) BTCUSDT -> BINANCE:BTCUSDT
+  if (/^[A-Z0-9]{4,20}USDT$/.test(upper) && !upper.includes(':')) {
+    symbols.push(`BINANCE:${upper}`);
+  }
+
+  // 지수 별칭 일부
+  const indexAlias: Record<string, string[]> = {
+    '^GSPC': ['SPY'],
+    '^IXIC': ['QQQ'],
+    '^DJI': ['DIA'],
+    '^RUT': ['IWM'],
+  };
+  for (const alias of indexAlias[upper] || []) {
+    symbols.push(alias);
+  }
+
+  return dedupeSymbols(symbols);
+}
+
+function makeFinnhubUrl(path: string, params: Record<string, string>): string {
+  const url = new URL(`${FINNHUB_API_BASE}${path}`);
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value);
+  }
+  return url.toString();
+}
+
+async function callFinnhub<T>(path: string, params: Record<string, string>): Promise<T> {
+  const response = await fetch(makeFinnhubUrl(path, params), {
+    headers: DEFAULT_JSON_HEADERS,
+  });
+
+  if (response.status === 404) {
+    throw new Error('FINNHUB_NOT_FOUND');
+  }
+
+  if (!response.ok) {
+    throw new Error(`FINNHUB_HTTP_${response.status}`);
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function fetchFinnhubQuote(symbol: string, apiKey: string): Promise<FinnhubQuoteResolved | null> {
+  let quote: FinnhubQuoteResponse;
+
+  try {
+    quote = await callFinnhub<FinnhubQuoteResponse>('/quote', {
+      symbol,
+      token: apiKey,
+    });
+  } catch (error) {
+    if (String(error).includes('FINNHUB_NOT_FOUND')) {
+      return null;
+    }
+    throw error;
+  }
+
+  const current = quote.c;
+  if (!Number.isFinite(current)) {
+    return null;
+  }
+
+  const previousClose = quote.pc;
+  let change = Number.isFinite(quote.d) ? (quote.d as number) : null;
+  if (change === null && Number.isFinite(previousClose)) {
+    change = (current as number) - (previousClose as number);
+  }
+
+  let changePercent = Number.isFinite(quote.dp) ? (quote.dp as number) : null;
+  if (
+    changePercent === null &&
+    change !== null &&
+    Number.isFinite(previousClose) &&
+    (previousClose as number) !== 0
+  ) {
+    changePercent = (change / (previousClose as number)) * 100;
+  }
+
+  // Finnhub에서 존재하지 않는 심볼은 모든 값이 0인 형태가 자주 반환됨
+  if ((current as number) === 0 && (!Number.isFinite(previousClose) || (previousClose as number) === 0)) {
+    return null;
+  }
 
   return {
-    symbol: item.symbol.toUpperCase(),
-    name: item.longName || item.shortName || item.symbol,
-    quoteType: item.quoteType,
-    price,
-    change: toFiniteNumber(item.regularMarketChange),
-    changePercent: toFiniteNumber(item.regularMarketChangePercent),
+    currentPrice: current as number,
+    change,
+    changePercent,
   };
 }
 
-function extractFromSveltekitFetchedScripts(
-  root: ReturnType<typeof parseHtml>,
-  symbolCandidates: string[]
-): ParsedYahooQuotePayload | null {
-  const targetSet = new Set(symbolCandidates.map(s => s.toUpperCase()));
-  const scripts = root.querySelectorAll('script[type="application/json"][data-sveltekit-fetched]');
-
-  for (const script of scripts) {
-    const rawScript = script.text?.trim();
-    if (!rawScript) continue;
-
-    try {
-      const envelope = JSON.parse(rawScript) as { body?: unknown };
-      if (typeof envelope.body !== 'string') continue;
-
-      const payload = JSON.parse(envelope.body) as {
-        quoteResponse?: { result?: YahooEmbeddedQuoteItem[] };
-      };
-      const results = payload.quoteResponse?.result;
-      if (!Array.isArray(results)) continue;
-
-      for (const item of results) {
-        const parsed = toParsedYahooQuote(item);
-        if (!parsed) continue;
-        if (targetSet.has(parsed.symbol)) {
-          return parsed;
-        }
-      }
-    } catch {
-      // ignore malformed script entries
-    }
-  }
-
-  return null;
-}
-
-function extractFromTrendingScript(
-  root: ReturnType<typeof parseHtml>,
-  symbolCandidates: string[]
-): ParsedYahooQuotePayload | null {
-  const targetSet = new Set(symbolCandidates.map(s => s.toUpperCase()));
-  const script = root.querySelector('script#fin-trending-tickers');
-  const raw = script?.text?.trim();
-  if (!raw) return null;
-
+async function fetchFinnhubProfileName(symbol: string, apiKey: string): Promise<string | undefined> {
   try {
-    const payload = JSON.parse(raw) as YahooEmbeddedQuoteItem[];
-    if (!Array.isArray(payload)) return null;
-
-    for (const item of payload) {
-      const parsed = toParsedYahooQuote(item);
-      if (!parsed) continue;
-      if (targetSet.has(parsed.symbol)) {
-        return parsed;
-      }
-    }
-  } catch {
-    // ignore malformed script content
-  }
-
-  return null;
-}
-
-function extractFinStreamerNumber(
-  root: ReturnType<typeof parseHtml>,
-  symbol: string,
-  field: string
-): number | null {
-  const target = symbol.toUpperCase();
-  const nodes = root.querySelectorAll(`fin-streamer[data-field="${field}"]`);
-
-  for (const node of nodes) {
-    const nodeSymbol = (node.getAttribute('data-symbol') || '').toUpperCase();
-    if (nodeSymbol !== target) continue;
-
-    const raw = node.getAttribute('data-value') || node.text;
-    const parsed = parseSignedNumber(raw);
-    if (parsed !== null) return parsed;
-  }
-
-  return null;
-}
-
-function extractCanonicalSymbol(root: ReturnType<typeof parseHtml>, fallback: string): string {
-  const canonical = root.querySelector('link[rel="canonical"]')?.getAttribute('href');
-  if (!canonical) return fallback;
-
-  const match = canonical.match(/\/quote\/([^/]+)\//i);
-  if (!match?.[1]) return fallback;
-
-  try {
-    return decodeURIComponent(match[1]).toUpperCase();
-  } catch {
-    return match[1].toUpperCase();
-  }
-}
-
-function extractYahooName(root: ReturnType<typeof parseHtml>, fallbackSymbol: string): string {
-  const target = fallbackSymbol.toUpperCase();
-  const headings = root.querySelectorAll('h1');
-  for (const headingEl of headings) {
-    const heading = headingEl.text.replace(/\s+/g, ' ').trim();
-    if (!heading) continue;
-    if (heading.toUpperCase().includes(target)) {
-      return heading;
-    }
-  }
-
-  const title = root.querySelector('title')?.text.replace(/\s+/g, ' ').trim();
-  if (title) {
-    const withoutSite = title.replace(/\s*-\s*Yahoo Finance\s*$/i, '');
-    const withoutSuffix = withoutSite.replace(/\s+Stock Price.*$/i, '').trim();
-    if (withoutSuffix) return withoutSuffix;
-  }
-
-  return fallbackSymbol;
-}
-
-function extractQuoteTypeFromHtml(html: string, symbol: string): string | undefined {
-  const escapedSymbol = escapeRegExp(symbol);
-
-  const symbolFirst = new RegExp(
-    `"symbol":"${escapedSymbol}"[\\s\\S]{0,320}?"quoteType":"([A-Z_]+)"`
-  );
-  const symbolFirstMatch = html.match(symbolFirst);
-  if (symbolFirstMatch?.[1]) return symbolFirstMatch[1];
-
-  const typeFirst = new RegExp(
-    `"quoteType":"([A-Z_]+)"[\\s\\S]{0,320}?"symbol":"${escapedSymbol}"`
-  );
-  const typeFirstMatch = html.match(typeFirst);
-  return typeFirstMatch?.[1];
-}
-
-function looksLikeYahooNotFoundPage(html: string): boolean {
-  const lower = html.toLowerCase();
-  return (
-    lower.includes('symbol lookup from yahoo finance') ||
-    lower.includes('requested symbol wasn') ||
-    lower.includes('requested symbol was not found') ||
-    lower.includes('lookup from yahoo finance')
-  );
-}
-
-async function fetchYahooQuotePage(symbol: string): Promise<YahooLookupResult> {
-  const normalizedSymbol = symbol.trim().toUpperCase();
-  if (!normalizedSymbol) {
-    return { status: 'not_found', query: symbol };
-  }
-
-  const url = `${YAHOO_QUOTE_BASE_URL}/${encodeURIComponent(normalizedSymbol)}/`;
-
-  try {
-    const response = await fetch(url, {
-      headers: YAHOO_PAGE_HEADERS,
+    const profile = await callFinnhub<FinnhubProfileResponse>('/stock/profile2', {
+      symbol,
+      token: apiKey,
     });
 
-    if (response.status === 404) {
-      return { status: 'not_found', query: normalizedSymbol };
-    }
-
-    if (!response.ok) {
-      return {
-        status: 'error',
-        query: normalizedSymbol,
-        reason: `Yahoo quote page failed: ${response.status}`,
-      };
-    }
-
-    const html = await response.text();
-    if (html.toLowerCase().includes('too many requests')) {
-      return {
-        status: 'error',
-        query: normalizedSymbol,
-        reason: 'Yahoo quote page rate-limited (429)',
-      };
-    }
-
-    const root = parseHtml(html);
-    let resolvedSymbol = extractCanonicalSymbol(root, normalizedSymbol);
-
-    let price =
-      extractFinStreamerNumber(root, resolvedSymbol, 'regularMarketPrice') ??
-      extractFinStreamerNumber(root, normalizedSymbol, 'regularMarketPrice');
-
-    let change =
-      extractFinStreamerNumber(root, resolvedSymbol, 'regularMarketChange') ??
-      extractFinStreamerNumber(root, normalizedSymbol, 'regularMarketChange');
-
-    let changePercent =
-      extractFinStreamerNumber(root, resolvedSymbol, 'regularMarketChangePercent') ??
-      extractFinStreamerNumber(root, normalizedSymbol, 'regularMarketChangePercent');
-
-    let quoteType: string | undefined;
-    let embeddedName: string | undefined;
-
-    const symbolCandidates = [resolvedSymbol, normalizedSymbol];
-    const embeddedQuote =
-      extractFromSveltekitFetchedScripts(root, symbolCandidates) ||
-      extractFromTrendingScript(root, symbolCandidates);
-
-    if (embeddedQuote) {
-      resolvedSymbol = embeddedQuote.symbol || resolvedSymbol;
-      if (price === null) price = embeddedQuote.price;
-      if (change === null) change = embeddedQuote.change;
-      if (changePercent === null) changePercent = embeddedQuote.changePercent;
-      quoteType = embeddedQuote.quoteType;
-      embeddedName = embeddedQuote.name;
-    }
-
-    if (price === null) {
-      if (looksLikeYahooNotFoundPage(html)) {
-        return { status: 'not_found', query: normalizedSymbol };
-      }
-
-      return {
-        status: 'error',
-        query: normalizedSymbol,
-        reason: 'Unable to parse Yahoo quote page (missing market price)',
-      };
-    }
-
-    const name = embeddedName || extractYahooName(root, resolvedSymbol);
-    const inferredQuoteType =
-      quoteType ||
-      extractQuoteTypeFromHtml(html, resolvedSymbol) ||
-      extractQuoteTypeFromHtml(html, normalizedSymbol);
-
-    return {
-      status: 'ok',
-      data: {
-        symbol: resolvedSymbol,
-        name,
-        value: formatYahooPrice(price),
-        change: toYahooChangeInfo(change ?? undefined, changePercent ?? undefined),
-        sourceUrl: `${YAHOO_QUOTE_BASE_URL}/${encodeURIComponent(resolvedSymbol)}/`,
-        assetType: toYahooAssetType(inferredQuoteType),
-      },
-    };
-  } catch (error) {
-    return {
-      status: 'error',
-      query: normalizedSymbol,
-      reason: `Yahoo quote page error: ${String(error)}`,
-    };
+    const name = profile.name?.trim();
+    if (name) return name;
+  } catch {
+    // 프로필 실패는 quote 조회 실패로 보지 않음
   }
+
+  return undefined;
 }
 
-export async function getYahooMarketData(query: string): Promise<YahooLookupResult> {
+async function searchFinnhub(query: string, apiKey: string): Promise<FinnhubCandidate[]> {
+  const payload = await callFinnhub<FinnhubSearchResponse>('/search', {
+    q: query,
+    token: apiKey,
+  });
+
+  const results = payload.result || [];
+  const normalizedQuery = query.trim().toUpperCase();
+
+  const scored = results
+    .map((item): FinnhubCandidate | null => {
+      const symbol = item.symbol?.trim().toUpperCase();
+      if (!symbol) return null;
+
+      return {
+        symbol,
+        type: item.type,
+        description: item.description,
+      };
+    })
+    .filter((item): item is FinnhubCandidate => item !== null)
+    .map(item => {
+      const display = item.symbol;
+      let score = 0;
+
+      if (display === normalizedQuery) score += 120;
+      if (display.replace(/^\^/, '') === normalizedQuery.replace(/^\^/, '')) score += 90;
+      if (display.startsWith(normalizedQuery)) score += 45;
+      if ((item.description || '').toUpperCase().includes(normalizedQuery)) score += 15;
+
+      const lowerType = (item.type || '').toLowerCase();
+      if (lowerType.includes('stock') || lowerType.includes('equity')) score += 10;
+      if (lowerType.includes('index')) score += 10;
+      if (lowerType.includes('crypto')) score += 10;
+
+      return { item, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map(entry => entry.item);
+
+  const deduped: FinnhubCandidate[] = [];
+  const seen = new Set<string>();
+  for (const item of scored) {
+    if (seen.has(item.symbol)) continue;
+    seen.add(item.symbol);
+    deduped.push(item);
+    if (deduped.length >= 12) break;
+  }
+
+  return deduped;
+}
+
+function buildDisplayName(symbol: string, name?: string): string {
+  const trimmedName = name?.trim();
+  if (!trimmedName) return symbol;
+
+  if (trimmedName.toUpperCase() === symbol.toUpperCase()) {
+    return symbol;
+  }
+
+  return `${trimmedName} (${symbol})`;
+}
+
+async function resolveFinnhubCandidate(
+  candidate: FinnhubCandidate,
+  apiKey: string
+): Promise<GlobalMarketData | null> {
+  const quote = await fetchFinnhubQuote(candidate.symbol, apiKey);
+  if (!quote) return null;
+
+  const profileName = await fetchFinnhubProfileName(candidate.symbol, apiKey);
+  const finalName = buildDisplayName(candidate.symbol, profileName || candidate.description);
+
+  return {
+    symbol: candidate.symbol,
+    name: finalName,
+    value: formatNumericValue(quote.currentPrice),
+    change: toChangeInfo(quote.change, quote.changePercent),
+    sourceUrl: `https://finnhub.io`,
+    assetType: toAssetType(candidate.type, candidate.symbol),
+  };
+}
+
+export async function getFinnhubMarketData(query: string, apiKey: string): Promise<GlobalLookupResult> {
   const trimmedQuery = query.trim();
   if (!trimmedQuery) {
     return { status: 'not_found', query };
   }
 
-  return fetchYahooQuotePage(trimmedQuery);
+  const key = apiKey.trim();
+  if (!key) {
+    return {
+      status: 'error',
+      query: trimmedQuery,
+      reason: 'Missing FINNHUB_API_KEY',
+    };
+  }
+
+  const directSymbols = buildDirectSymbolCandidates(trimmedQuery);
+  let firstError: string | null = null;
+
+  for (const symbol of directSymbols) {
+    try {
+      const resolved = await resolveFinnhubCandidate({ symbol }, key);
+      if (resolved) {
+        return { status: 'ok', data: resolved };
+      }
+    } catch (error) {
+      if (!firstError) {
+        firstError = String(error);
+      }
+    }
+  }
+
+  try {
+    const searchCandidates = await searchFinnhub(trimmedQuery, key);
+
+    for (const candidate of searchCandidates) {
+      try {
+        const resolved = await resolveFinnhubCandidate(candidate, key);
+        if (resolved) {
+          return { status: 'ok', data: resolved };
+        }
+      } catch (error) {
+        if (!firstError) {
+          firstError = String(error);
+        }
+      }
+    }
+  } catch (error) {
+    return {
+      status: 'error',
+      query: trimmedQuery,
+      reason: `Finnhub search failed: ${String(error)}`,
+    };
+  }
+
+  if (firstError) {
+    return {
+      status: 'error',
+      query: trimmedQuery,
+      reason: `Finnhub lookup failed: ${firstError}`,
+    };
+  }
+
+  return { status: 'not_found', query: trimmedQuery };
 }
 
 /**

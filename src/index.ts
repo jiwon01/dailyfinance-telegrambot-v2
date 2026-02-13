@@ -9,8 +9,8 @@
 import { createTelegramBot, TelegramEnv, TelegramUpdate } from './telegram';
 import {
   getDailyMarketSummary,
+  getFinnhubMarketData,
   getMarketData,
-  getYahooMarketData,
   parseCommand,
   parseSearchCommand,
 } from './scraper';
@@ -18,7 +18,7 @@ import { getAllChartUrls } from './chart';
 
 // 환경변수 타입 확장
 interface Env extends TelegramEnv {
-  // 추가 환경변수가 필요하면 여기에 정의
+  FINNHUB_API_KEY?: string;
 }
 
 function assertTelegramToken(env: TelegramEnv): void {
@@ -110,7 +110,7 @@ export default {
         return new Response('OK', { status: 200 });
       }
 
-      // Yahoo Finance 검색 명령어: ?AAPL, ?^GSPC, ?BTC-USD, ?tesla
+      // Finnhub 검색 명령어: ?AAPL, ?^GSPC, ?BTC-USD, ?tesla
       if (rawCommand.startsWith('?')) {
         const query = parseSearchCommand(rawCommand);
 
@@ -123,9 +123,18 @@ export default {
           return new Response('OK', { status: 200 });
         }
 
-        const yahooResult = await getYahooMarketData(query);
+        if (!env.FINNHUB_API_KEY) {
+          await bot.sendMessage(
+            '⚠️ FINNHUB_API_KEY가 설정되지 않았습니다. 관리자에게 문의해주세요.',
+            {},
+            chatId,
+          );
+          return new Response('OK', { status: 200 });
+        }
 
-        if (yahooResult.status === 'not_found') {
+        const finnhubResult = await getFinnhubMarketData(query, env.FINNHUB_API_KEY);
+
+        if (finnhubResult.status === 'not_found') {
           await bot.sendMessage(
             `⚠️ "${query}" 검색 결과가 없습니다.\n예: ?AAPL, ?^GSPC, ?BTC-USD`,
             {},
@@ -134,10 +143,10 @@ export default {
           return new Response('OK', { status: 200 });
         }
 
-        if (yahooResult.status === 'error') {
-          console.error('Yahoo lookup error:', yahooResult.reason);
+        if (finnhubResult.status === 'error') {
+          console.error('Finnhub lookup error:', finnhubResult.reason);
           await bot.sendMessage(
-            '⚠️ Yahoo Finance 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+            '⚠️ Finnhub 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
             {},
             chatId,
           );
@@ -146,11 +155,11 @@ export default {
 
         await bot.sendMarketDataMessage(
           username,
-          yahooResult.data.name,
-          yahooResult.data.value,
-          yahooResult.data.change,
+          finnhubResult.data.name,
+          finnhubResult.data.value,
+          finnhubResult.data.change,
           chatId,
-          yahooResult.data.sourceUrl,
+          finnhubResult.data.sourceUrl,
         );
 
         return new Response('OK', { status: 200 });
