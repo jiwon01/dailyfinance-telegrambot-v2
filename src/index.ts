@@ -159,7 +159,6 @@ export default {
           finnhubResult.data.value,
           finnhubResult.data.change,
           chatId,
-          finnhubResult.data.sourceUrl,
         );
 
         return new Response('OK', { status: 200 });
@@ -182,7 +181,14 @@ export default {
       }
 
       // 텔레그램으로 응답 (메시지를 보낸 채팅방으로 답변)
-      await bot.sendMarketDataMessage(username, marketData.name, marketData.value, marketData.change, chatId);
+      await bot.sendMarketDataMessage(
+        username,
+        marketData.name,
+        marketData.value,
+        marketData.change,
+        chatId,
+        'https://finance.naver.com',
+      );
 
       return new Response('OK', { status: 200 });
     } catch (error) {

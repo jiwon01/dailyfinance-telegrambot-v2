@@ -174,18 +174,23 @@ export class TelegramBot {
     value: string,
     change?: ChangeInfo,
     chatId?: string,
-    sourceUrl: string = 'https://finance.naver.com'
+    sourceUrl?: string
   ): Promise<TelegramResponse<TelegramMessage>> {
     const changeText = formatChange(change);
     const safeUsername = escapeHtml(username);
     const safeMarketName = escapeHtml(marketName);
     const safeValue = escapeHtml(value);
-    const safeSourceUrl = escapeHtml(sourceUrl);
-    const message = [
+    const messageLines = [
       `@${safeUsername}`,
       `${safeMarketName}의 현재 시세는 <b>${safeValue}</b>${changeText} 입니다.`,
-      `<a href="${safeSourceUrl}"><i>자세히 보기</i></a>`,
-    ].join('\n');
+    ];
+
+    if (sourceUrl) {
+      const safeSourceUrl = escapeHtml(sourceUrl);
+      messageLines.push(`<a href="${safeSourceUrl}"><i>자세히 보기</i></a>`);
+    }
+
+    const message = messageLines.join('\n');
 
     return this.sendMessage(message, {}, chatId);
   }
