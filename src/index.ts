@@ -7,7 +7,13 @@
  */
 
 import { createTelegramBot, TelegramEnv, TelegramUpdate } from './telegram';
-import { getDailyMarketSummary, getMarketData, parseCommand } from './scraper';
+import {
+  getDailyMarketSummary,
+  getMarketData,
+  getYahooMarketData,
+  parseCommand,
+  parseSearchCommand,
+} from './scraper';
 import { getAllChartUrls } from './chart';
 
 // 환경변수 타입 확장
@@ -69,7 +75,8 @@ export default {
         return new Response('OK', { status: 200 });
       }
 
-      const command = message.text.trim().toLowerCase();
+      const rawCommand = message.text.trim();
+      const command = rawCommand.toLowerCase();
       const chatId = message.chat.id.toString();
       
       // from이 없는 경우 (채널 메시지, 익명 관리자 등)
@@ -93,8 +100,54 @@ export default {
         return new Response('OK', { status: 200 });
       }
 
+      // Yahoo Finance 검색 명령어: ?AAPL, ?^GSPC, ?BTC-USD, ?tesla
+      if (rawCommand.startsWith('?')) {
+        const query = parseSearchCommand(rawCommand);
+
+        if (!query) {
+          await bot.sendMessage(
+            '⚠️ 검색어가 비어 있습니다. 예: ?AAPL, ?^GSPC, ?BTC-USD',
+            {},
+            chatId,
+          );
+          return new Response('OK', { status: 200 });
+        }
+
+        const yahooResult = await getYahooMarketData(query);
+
+        if (yahooResult.status === 'not_found') {
+          await bot.sendMessage(
+            `⚠️ "${query}" 검색 결과가 없습니다.\n예: ?AAPL, ?^GSPC, ?BTC-USD`,
+            {},
+            chatId,
+          );
+          return new Response('OK', { status: 200 });
+        }
+
+        if (yahooResult.status === 'error') {
+          console.error('Yahoo lookup error:', yahooResult.reason);
+          await bot.sendMessage(
+            '⚠️ Yahoo Finance 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+            {},
+            chatId,
+          );
+          return new Response('OK', { status: 200 });
+        }
+
+        await bot.sendMarketDataMessage(
+          username,
+          yahooResult.data.name,
+          yahooResult.data.value,
+          yahooResult.data.change,
+          chatId,
+          yahooResult.data.sourceUrl,
+        );
+
+        return new Response('OK', { status: 200 });
+      }
+
       // 명령어 파싱
-      const marketType = parseCommand(message.text.trim());
+      const marketType = parseCommand(rawCommand);
 
       if (!marketType) {
         // 알 수 없는 명령어는 무시

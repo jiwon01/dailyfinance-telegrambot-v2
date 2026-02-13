@@ -55,11 +55,25 @@ function formatChange(change?: ChangeInfo): string {
   
   // 값에서 기존 부호 제거 후 방향에 맞게 부호 추가
   const cleanValue = change.value.replace(/^[+-]/, '');
-  const signedValue = change.direction === 'down' ? `-${cleanValue}` : `+${cleanValue}`;
+  const signedValue =
+    change.direction === 'down'
+      ? `-${cleanValue}`
+      : change.direction === 'up'
+        ? `+${cleanValue}`
+        : cleanValue;
   
   const percentText = change.percent ? ` (${change.percent})` : '';
 
   return ` ${emoji}${signedValue}${percentText}`;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**
@@ -159,13 +173,18 @@ export class TelegramBot {
     marketName: string,
     value: string,
     change?: ChangeInfo,
-    chatId?: string
+    chatId?: string,
+    sourceUrl: string = 'https://finance.naver.com'
   ): Promise<TelegramResponse<TelegramMessage>> {
     const changeText = formatChange(change);
+    const safeUsername = escapeHtml(username);
+    const safeMarketName = escapeHtml(marketName);
+    const safeValue = escapeHtml(value);
+    const safeSourceUrl = escapeHtml(sourceUrl);
     const message = [
-      `@${username}`,
-      `${marketName}의 현재 시세는 <b>${value}</b>${changeText} 입니다.`,
-      `<a href="https://finance.naver.com"><i>자세히 보기</i></a>`,
+      `@${safeUsername}`,
+      `${safeMarketName}의 현재 시세는 <b>${safeValue}</b>${changeText} 입니다.`,
+      `<a href="${safeSourceUrl}"><i>자세히 보기</i></a>`,
     ].join('\n');
 
     return this.sendMessage(message, {}, chatId);
