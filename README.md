@@ -119,7 +119,7 @@ crons = ["0 8 * * 1-5"]  # 평일 UTC 08:00 (KST 17:00)
 
 - **주가 지수**: 네이버 금융 API
 - **환율**: 네이버 금융 API  
-- **전세계 주식/지수/가상화폐 검색**: Yahoo Finance API (yfinance와 동일 데이터 소스)
+- **전세계 주식/지수/가상화폐 검색**: Yahoo Finance Quote 웹페이지 파싱 (`https://finance.yahoo.com/quote/{SYMBOL}/`)
 - **차트**: QuickChart.io
 
 ## 라이센스

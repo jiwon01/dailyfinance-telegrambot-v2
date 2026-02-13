@@ -2,6 +2,8 @@
  * 네이버 금융 API에서 시세 정보를 가져오는 모듈
  */
 
+import { parse as parseHtml } from 'node-html-parser';
+
 // API URL 상수
 const API_URLS = {
   KOSPI: 'https://polling.finance.naver.com/api/realtime/domestic/index/KOSPI',
@@ -10,12 +12,24 @@ const API_URLS = {
   EXCHANGE: 'https://m.stock.naver.com/front-api/marketIndex/exchange/new',
 } as const;
 
-const YAHOO_API_URLS = {
-  QUOTE: 'https://query1.finance.yahoo.com/v7/finance/quote',
-  SEARCH: 'https://query2.finance.yahoo.com/v1/finance/search',
+const DEFAULT_JSON_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  'Accept': 'application/json',
 } as const;
 
-const YAHOO_SUPPORTED_TYPES = new Set(['EQUITY', 'INDEX', 'CRYPTOCURRENCY']);
+const YAHOO_QUOTE_BASE_URL = 'https://finance.yahoo.com/quote';
+const YAHOO_PAGE_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Referer': 'https://finance.yahoo.com/',
+} as const;
+
+const YAHOO_ASSET_TYPE_MAP: Record<string, YahooMarketData['assetType']> = {
+  EQUITY: 'stock',
+  INDEX: 'index',
+  CRYPTOCURRENCY: 'crypto',
+};
 
 // 시세 타입 정의
 export type MarketType =
@@ -109,40 +123,12 @@ interface ExchangeResponse {
   result: ExchangeItem[];
 }
 
-interface YahooQuoteItem {
-  symbol: string;
-  quoteType?: string;
-  shortName?: string;
-  longName?: string;
-  regularMarketPrice?: number;
-  regularMarketChange?: number;
-  regularMarketChangePercent?: number;
-}
-
-interface YahooQuoteResponse {
-  quoteResponse?: {
-    result?: YahooQuoteItem[];
-  };
-}
-
-interface YahooSearchItem {
-  symbol: string;
-  quoteType?: string;
-}
-
-interface YahooSearchResponse {
-  quotes?: YahooSearchItem[];
-}
-
 /**
  * API 호출 유틸리티
  */
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'application/json',
-    },
+    headers: DEFAULT_JSON_HEADERS,
   });
 
   if (!response.ok) {
@@ -156,13 +142,6 @@ function formatYahooPrice(value: number): string {
   const abs = Math.abs(value);
   const maxFractionDigits = abs >= 1000 ? 2 : abs >= 1 ? 4 : 8;
   return value.toLocaleString('en-US', { maximumFractionDigits: maxFractionDigits });
-}
-
-function toYahooAssetType(quoteType?: string): YahooMarketData['assetType'] {
-  if (quoteType === 'EQUITY') return 'stock';
-  if (quoteType === 'INDEX') return 'index';
-  if (quoteType === 'CRYPTOCURRENCY') return 'crypto';
-  return 'other';
 }
 
 function toYahooChangeInfo(change?: number, changePercent?: number): ChangeInfo | undefined {
@@ -179,44 +158,115 @@ function toYahooChangeInfo(change?: number, changePercent?: number): ChangeInfo 
   };
 }
 
-function toYahooMarketData(item: YahooQuoteItem): YahooMarketData | null {
-  if (!YAHOO_SUPPORTED_TYPES.has(item.quoteType || '')) {
-    return null;
-  }
-
-  if (!Number.isFinite(item.regularMarketPrice)) {
-    return null;
-  }
-
-  const symbol = item.symbol;
-  const baseName = item.longName || item.shortName || symbol;
-  const name = baseName === symbol ? symbol : `${baseName} (${symbol})`;
-
-  return {
-    symbol,
-    name,
-    value: formatYahooPrice(item.regularMarketPrice!),
-    change: toYahooChangeInfo(item.regularMarketChange, item.regularMarketChangePercent),
-    sourceUrl: `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}`,
-    assetType: toYahooAssetType(item.quoteType),
-  };
+function toYahooAssetType(quoteType?: string): YahooMarketData['assetType'] {
+  if (!quoteType) return 'other';
+  return YAHOO_ASSET_TYPE_MAP[quoteType] || 'other';
 }
 
-async function fetchYahooQuoteBySymbol(symbol: string): Promise<YahooLookupResult> {
-  const normalizedSymbol = symbol.trim();
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
+function parseSignedNumber(raw: string | null | undefined): number | null {
+  if (!raw) return null;
+  const normalized = raw.replace(/[,%()]/g, '').trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractFinStreamerNumber(
+  root: ReturnType<typeof parseHtml>,
+  symbol: string,
+  field: string
+): number | null {
+  const target = symbol.toUpperCase();
+  const nodes = root.querySelectorAll(`fin-streamer[data-field="${field}"]`);
+
+  for (const node of nodes) {
+    const nodeSymbol = (node.getAttribute('data-symbol') || '').toUpperCase();
+    if (nodeSymbol !== target) continue;
+
+    const raw = node.getAttribute('data-value') || node.text;
+    const parsed = parseSignedNumber(raw);
+    if (parsed !== null) return parsed;
+  }
+
+  return null;
+}
+
+function extractCanonicalSymbol(root: ReturnType<typeof parseHtml>, fallback: string): string {
+  const canonical = root.querySelector('link[rel="canonical"]')?.getAttribute('href');
+  if (!canonical) return fallback;
+
+  const match = canonical.match(/\/quote\/([^/]+)\//i);
+  if (!match?.[1]) return fallback;
+
+  try {
+    return decodeURIComponent(match[1]).toUpperCase();
+  } catch {
+    return match[1].toUpperCase();
+  }
+}
+
+function extractYahooName(root: ReturnType<typeof parseHtml>, fallbackSymbol: string): string {
+  const target = fallbackSymbol.toUpperCase();
+  const headings = root.querySelectorAll('h1');
+  for (const headingEl of headings) {
+    const heading = headingEl.text.replace(/\s+/g, ' ').trim();
+    if (!heading) continue;
+    if (heading.toUpperCase().includes(target)) {
+      return heading;
+    }
+  }
+
+  const title = root.querySelector('title')?.text.replace(/\s+/g, ' ').trim();
+  if (title) {
+    const withoutSite = title.replace(/\s*-\s*Yahoo Finance\s*$/i, '');
+    const withoutSuffix = withoutSite.replace(/\s+Stock Price.*$/i, '').trim();
+    if (withoutSuffix) return withoutSuffix;
+  }
+
+  return fallbackSymbol;
+}
+
+function extractQuoteTypeFromHtml(html: string, symbol: string): string | undefined {
+  const escapedSymbol = escapeRegExp(symbol);
+
+  const symbolFirst = new RegExp(
+    `"symbol":"${escapedSymbol}"[\\s\\S]{0,320}?"quoteType":"([A-Z_]+)"`
+  );
+  const symbolFirstMatch = html.match(symbolFirst);
+  if (symbolFirstMatch?.[1]) return symbolFirstMatch[1];
+
+  const typeFirst = new RegExp(
+    `"quoteType":"([A-Z_]+)"[\\s\\S]{0,320}?"symbol":"${escapedSymbol}"`
+  );
+  const typeFirstMatch = html.match(typeFirst);
+  return typeFirstMatch?.[1];
+}
+
+function looksLikeYahooNotFoundPage(html: string): boolean {
+  const lower = html.toLowerCase();
+  return (
+    lower.includes('symbol lookup from yahoo finance') ||
+    lower.includes('requested symbol wasn') ||
+    lower.includes('requested symbol was not found') ||
+    lower.includes('lookup from yahoo finance')
+  );
+}
+
+async function fetchYahooQuotePage(symbol: string): Promise<YahooLookupResult> {
+  const normalizedSymbol = symbol.trim().toUpperCase();
   if (!normalizedSymbol) {
     return { status: 'not_found', query: symbol };
   }
 
-  const url = `${YAHOO_API_URLS.QUOTE}?symbols=${encodeURIComponent(normalizedSymbol)}`;
+  const url = `${YAHOO_QUOTE_BASE_URL}/${encodeURIComponent(normalizedSymbol)}/`;
 
   try {
     const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-      },
+      headers: YAHOO_PAGE_HEADERS,
     });
 
     if (response.status === 404) {
@@ -227,96 +277,78 @@ async function fetchYahooQuoteBySymbol(symbol: string): Promise<YahooLookupResul
       return {
         status: 'error',
         query: normalizedSymbol,
-        reason: `Yahoo quote API failed: ${response.status}`,
+        reason: `Yahoo quote page failed: ${response.status}`,
       };
     }
 
-    const payload = await response.json() as YahooQuoteResponse;
-    const results = payload.quoteResponse?.result || [];
-    const exactMatch = results.find(item => item.symbol?.toUpperCase() === normalizedSymbol.toUpperCase());
-    const candidate = exactMatch || results[0];
-
-    if (!candidate) {
-      return { status: 'not_found', query: normalizedSymbol };
+    const html = await response.text();
+    if (html.toLowerCase().includes('too many requests')) {
+      return {
+        status: 'error',
+        query: normalizedSymbol,
+        reason: 'Yahoo quote page rate-limited (429)',
+      };
     }
 
-    const parsed = toYahooMarketData(candidate);
+    const root = parseHtml(html);
+    const resolvedSymbol = extractCanonicalSymbol(root, normalizedSymbol);
 
-    if (!parsed) {
-      return { status: 'not_found', query: normalizedSymbol };
+    const price =
+      extractFinStreamerNumber(root, resolvedSymbol, 'regularMarketPrice') ??
+      extractFinStreamerNumber(root, normalizedSymbol, 'regularMarketPrice');
+
+    const change =
+      extractFinStreamerNumber(root, resolvedSymbol, 'regularMarketChange') ??
+      extractFinStreamerNumber(root, normalizedSymbol, 'regularMarketChange');
+
+    const changePercent =
+      extractFinStreamerNumber(root, resolvedSymbol, 'regularMarketChangePercent') ??
+      extractFinStreamerNumber(root, normalizedSymbol, 'regularMarketChangePercent');
+
+    if (price === null) {
+      if (looksLikeYahooNotFoundPage(html)) {
+        return { status: 'not_found', query: normalizedSymbol };
+      }
+
+      return {
+        status: 'error',
+        query: normalizedSymbol,
+        reason: 'Unable to parse Yahoo quote page',
+      };
     }
 
-    return { status: 'ok', data: parsed };
+    const name = extractYahooName(root, resolvedSymbol);
+    const quoteType =
+      extractQuoteTypeFromHtml(html, resolvedSymbol) ||
+      extractQuoteTypeFromHtml(html, normalizedSymbol);
+
+    return {
+      status: 'ok',
+      data: {
+        symbol: resolvedSymbol,
+        name,
+        value: formatYahooPrice(price),
+        change: toYahooChangeInfo(change ?? undefined, changePercent ?? undefined),
+        sourceUrl: `${YAHOO_QUOTE_BASE_URL}/${encodeURIComponent(resolvedSymbol)}/`,
+        assetType: toYahooAssetType(quoteType),
+      },
+    };
   } catch (error) {
     return {
       status: 'error',
       query: normalizedSymbol,
-      reason: `Yahoo quote API error: ${String(error)}`,
+      reason: `Yahoo quote page error: ${String(error)}`,
     };
   }
-}
-
-async function searchYahooSymbol(query: string): Promise<string | null> {
-  const url =
-    `${YAHOO_API_URLS.SEARCH}?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0&enableFuzzyQuery=true`;
-
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'application/json',
-    },
-  });
-
-  if (response.status === 404) {
-    return null;
-  }
-
-  if (!response.ok) {
-    throw new Error(`Yahoo search API failed: ${response.status}`);
-  }
-
-  const payload = await response.json() as YahooSearchResponse;
-  const quotes = payload.quotes || [];
-  const supported = quotes.filter(item => YAHOO_SUPPORTED_TYPES.has(item.quoteType || ''));
-
-  if (supported.length === 0) {
-    return null;
-  }
-
-  const exactMatch = supported.find(item => item.symbol.toUpperCase() === query.toUpperCase());
-  return (exactMatch || supported[0]).symbol;
 }
 
 export async function getYahooMarketData(query: string): Promise<YahooLookupResult> {
   const trimmedQuery = query.trim();
-
   if (!trimmedQuery) {
     return { status: 'not_found', query };
   }
 
-  const directLookup = await fetchYahooQuoteBySymbol(trimmedQuery.toUpperCase());
-  if (directLookup.status === 'ok') {
-    return directLookup;
-  }
-
-  if (directLookup.status === 'error') {
-    return directLookup;
-  }
-
-  try {
-    const symbol = await searchYahooSymbol(trimmedQuery);
-    if (!symbol) {
-      return { status: 'not_found', query: trimmedQuery };
-    }
-
-    return fetchYahooQuoteBySymbol(symbol);
-  } catch (error) {
-    return {
-      status: 'error',
-      query: trimmedQuery,
-      reason: `Yahoo search API error: ${String(error)}`,
-    };
-  }
+  return fetchYahooQuotePage(trimmedQuery);
 }
 
 /**
