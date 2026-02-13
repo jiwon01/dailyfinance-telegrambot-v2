@@ -163,6 +163,25 @@ function toYahooAssetType(quoteType?: string): YahooMarketData['assetType'] {
   return YAHOO_ASSET_TYPE_MAP[quoteType] || 'other';
 }
 
+interface YahooEmbeddedQuoteItem {
+  symbol?: string;
+  quoteType?: string;
+  shortName?: string;
+  longName?: string;
+  regularMarketPrice?: { raw?: number } | number;
+  regularMarketChange?: { raw?: number } | number;
+  regularMarketChangePercent?: { raw?: number } | number;
+}
+
+interface ParsedYahooQuotePayload {
+  symbol: string;
+  name?: string;
+  quoteType?: string;
+  price: number;
+  change: number | null;
+  changePercent: number | null;
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -173,6 +192,98 @@ function parseSignedNumber(raw: string | null | undefined): number | null {
   if (!normalized) return null;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'object' && value !== null && 'raw' in value) {
+    const raw = (value as { raw?: unknown }).raw;
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return raw;
+    }
+  }
+  return null;
+}
+
+function toParsedYahooQuote(item: YahooEmbeddedQuoteItem): ParsedYahooQuotePayload | null {
+  if (!item.symbol) return null;
+
+  const price = toFiniteNumber(item.regularMarketPrice);
+  if (price === null) return null;
+
+  return {
+    symbol: item.symbol.toUpperCase(),
+    name: item.longName || item.shortName || item.symbol,
+    quoteType: item.quoteType,
+    price,
+    change: toFiniteNumber(item.regularMarketChange),
+    changePercent: toFiniteNumber(item.regularMarketChangePercent),
+  };
+}
+
+function extractFromSveltekitFetchedScripts(
+  root: ReturnType<typeof parseHtml>,
+  symbolCandidates: string[]
+): ParsedYahooQuotePayload | null {
+  const targetSet = new Set(symbolCandidates.map(s => s.toUpperCase()));
+  const scripts = root.querySelectorAll('script[type="application/json"][data-sveltekit-fetched]');
+
+  for (const script of scripts) {
+    const rawScript = script.text?.trim();
+    if (!rawScript) continue;
+
+    try {
+      const envelope = JSON.parse(rawScript) as { body?: unknown };
+      if (typeof envelope.body !== 'string') continue;
+
+      const payload = JSON.parse(envelope.body) as {
+        quoteResponse?: { result?: YahooEmbeddedQuoteItem[] };
+      };
+      const results = payload.quoteResponse?.result;
+      if (!Array.isArray(results)) continue;
+
+      for (const item of results) {
+        const parsed = toParsedYahooQuote(item);
+        if (!parsed) continue;
+        if (targetSet.has(parsed.symbol)) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore malformed script entries
+    }
+  }
+
+  return null;
+}
+
+function extractFromTrendingScript(
+  root: ReturnType<typeof parseHtml>,
+  symbolCandidates: string[]
+): ParsedYahooQuotePayload | null {
+  const targetSet = new Set(symbolCandidates.map(s => s.toUpperCase()));
+  const script = root.querySelector('script#fin-trending-tickers');
+  const raw = script?.text?.trim();
+  if (!raw) return null;
+
+  try {
+    const payload = JSON.parse(raw) as YahooEmbeddedQuoteItem[];
+    if (!Array.isArray(payload)) return null;
+
+    for (const item of payload) {
+      const parsed = toParsedYahooQuote(item);
+      if (!parsed) continue;
+      if (targetSet.has(parsed.symbol)) {
+        return parsed;
+      }
+    }
+  } catch {
+    // ignore malformed script content
+  }
+
+  return null;
 }
 
 function extractFinStreamerNumber(
@@ -291,19 +402,36 @@ async function fetchYahooQuotePage(symbol: string): Promise<YahooLookupResult> {
     }
 
     const root = parseHtml(html);
-    const resolvedSymbol = extractCanonicalSymbol(root, normalizedSymbol);
+    let resolvedSymbol = extractCanonicalSymbol(root, normalizedSymbol);
 
-    const price =
+    let price =
       extractFinStreamerNumber(root, resolvedSymbol, 'regularMarketPrice') ??
       extractFinStreamerNumber(root, normalizedSymbol, 'regularMarketPrice');
 
-    const change =
+    let change =
       extractFinStreamerNumber(root, resolvedSymbol, 'regularMarketChange') ??
       extractFinStreamerNumber(root, normalizedSymbol, 'regularMarketChange');
 
-    const changePercent =
+    let changePercent =
       extractFinStreamerNumber(root, resolvedSymbol, 'regularMarketChangePercent') ??
       extractFinStreamerNumber(root, normalizedSymbol, 'regularMarketChangePercent');
+
+    let quoteType: string | undefined;
+    let embeddedName: string | undefined;
+
+    const symbolCandidates = [resolvedSymbol, normalizedSymbol];
+    const embeddedQuote =
+      extractFromSveltekitFetchedScripts(root, symbolCandidates) ||
+      extractFromTrendingScript(root, symbolCandidates);
+
+    if (embeddedQuote) {
+      resolvedSymbol = embeddedQuote.symbol || resolvedSymbol;
+      if (price === null) price = embeddedQuote.price;
+      if (change === null) change = embeddedQuote.change;
+      if (changePercent === null) changePercent = embeddedQuote.changePercent;
+      quoteType = embeddedQuote.quoteType;
+      embeddedName = embeddedQuote.name;
+    }
 
     if (price === null) {
       if (looksLikeYahooNotFoundPage(html)) {
@@ -313,12 +441,13 @@ async function fetchYahooQuotePage(symbol: string): Promise<YahooLookupResult> {
       return {
         status: 'error',
         query: normalizedSymbol,
-        reason: 'Unable to parse Yahoo quote page',
+        reason: 'Unable to parse Yahoo quote page (missing market price)',
       };
     }
 
-    const name = extractYahooName(root, resolvedSymbol);
-    const quoteType =
+    const name = embeddedName || extractYahooName(root, resolvedSymbol);
+    const inferredQuoteType =
+      quoteType ||
       extractQuoteTypeFromHtml(html, resolvedSymbol) ||
       extractQuoteTypeFromHtml(html, normalizedSymbol);
 
@@ -330,7 +459,7 @@ async function fetchYahooQuotePage(symbol: string): Promise<YahooLookupResult> {
         value: formatYahooPrice(price),
         change: toYahooChangeInfo(change ?? undefined, changePercent ?? undefined),
         sourceUrl: `${YAHOO_QUOTE_BASE_URL}/${encodeURIComponent(resolvedSymbol)}/`,
-        assetType: toYahooAssetType(quoteType),
+        assetType: toYahooAssetType(inferredQuoteType),
       },
     };
   } catch (error) {
