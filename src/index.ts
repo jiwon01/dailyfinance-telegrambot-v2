@@ -21,10 +21,13 @@ interface Env extends TelegramEnv {
   // 추가 환경변수가 필요하면 여기에 정의
 }
 
-function assertTelegramEnv(env: TelegramEnv): void {
+function assertTelegramToken(env: TelegramEnv): void {
   if (!env.TELEGRAM_BOT_TOKEN) {
     throw new Error('Missing TELEGRAM_BOT_TOKEN');
   }
+}
+
+function assertTelegramDefaultChatId(env: TelegramEnv): void {
   if (!env.TELEGRAM_CHAT_ID) {
     throw new Error('Missing TELEGRAM_CHAT_ID');
   }
@@ -40,7 +43,8 @@ export default {
     // 테스트용 엔드포인트: GET /test
     if (request.method === 'GET' && url.pathname === '/test') {
       try {
-        assertTelegramEnv(env);
+        assertTelegramToken(env);
+        assertTelegramDefaultChatId(env);
         const bot = createTelegramBot(env);
 
         // 1. 차트 이미지 전송
@@ -65,10 +69,13 @@ export default {
       return new Response('Method not allowed', { status: 405 });
     }
 
+    let update: TelegramUpdate | null = null;
+
     try {
-      assertTelegramEnv(env);
-      const update: TelegramUpdate = await request.json();
-      const message = update.message;
+      assertTelegramToken(env);
+      const parsedUpdate = await request.json() as TelegramUpdate;
+      update = parsedUpdate;
+      const message = parsedUpdate.message;
       
       // 메시지가 없으면 무시
       if (!message?.text) {
@@ -85,7 +92,10 @@ export default {
       }
       
       const username = message.from.username || message.from.first_name;
-      const bot = createTelegramBot(env);
+      const bot = createTelegramBot({
+        TELEGRAM_BOT_TOKEN: env.TELEGRAM_BOT_TOKEN,
+        TELEGRAM_CHAT_ID: env.TELEGRAM_CHAT_ID || chatId,
+      });
 
       // "now" 명령어: 일일 브리핑 즉시 발송
       if (command === 'now') {
@@ -170,10 +180,16 @@ export default {
       console.error('Webhook error:', error);
       // 오류 발생 시에도 200 반환 (텔레그램 웹훅이 재시도하지 않도록)
       try {
-        const update: TelegramUpdate = await request.clone().json();
-        if (update.message?.chat?.id) {
-          const bot = createTelegramBot(env);
-          await bot.sendMessage(`⚠️ 요청 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.`, {}, update.message.chat.id.toString());
+        if (update?.message?.chat?.id && env.TELEGRAM_BOT_TOKEN) {
+          const bot = createTelegramBot({
+            TELEGRAM_BOT_TOKEN: env.TELEGRAM_BOT_TOKEN,
+            TELEGRAM_CHAT_ID: env.TELEGRAM_CHAT_ID || update.message.chat.id.toString(),
+          });
+          await bot.sendMessage(
+            `⚠️ 요청 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.`,
+            {},
+            update.message.chat.id.toString(),
+          );
         }
       } catch {
         // 오류 메시지 전송 실패 시 무시
@@ -190,7 +206,8 @@ export default {
 
     ctx.waitUntil((async () => {
       try {
-        assertTelegramEnv(env);
+        assertTelegramToken(env);
+        assertTelegramDefaultChatId(env);
         const bot = createTelegramBot(env);
 
         const [charts, marketSummary] = await Promise.all([
