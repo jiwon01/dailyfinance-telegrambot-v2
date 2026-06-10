@@ -21,6 +21,11 @@ interface Env extends TelegramEnv {
   FINNHUB_API_KEY?: string;
 }
 
+interface DailyBriefingOptions {
+  chatId?: string;
+  logPrefix?: string;
+}
+
 function assertTelegramToken(env: TelegramEnv): void {
   if (!env.TELEGRAM_BOT_TOKEN) {
     throw new Error('Missing TELEGRAM_BOT_TOKEN');
@@ -33,6 +38,40 @@ function assertTelegramDefaultChatId(env: TelegramEnv): void {
   }
 }
 
+async function sendDailyBriefing(env: Env, options: DailyBriefingOptions = {}) {
+  assertTelegramToken(env);
+
+  if (!options.chatId) {
+    assertTelegramDefaultChatId(env);
+  }
+
+  const bot = createTelegramBot({
+    TELEGRAM_BOT_TOKEN: env.TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID: env.TELEGRAM_CHAT_ID || options.chatId || '',
+  });
+
+  const [charts, marketSummary] = await Promise.all([
+    getAllChartUrls(),
+    getDailyMarketSummary(),
+  ]);
+
+  await bot.sendChartImages(charts, options.chatId);
+  console.log(`${options.logPrefix || 'Daily briefing'} chart images send attempted:`, {
+    kospi: !!charts.kospi,
+    usd: !!charts.usd,
+  });
+
+  const message = await bot.sendDailyMarketMessage(marketSummary, options.chatId);
+
+  if (message.ok) {
+    console.log(`${options.logPrefix || 'Daily briefing'} market message sent successfully`);
+  } else {
+    console.error(`${options.logPrefix || 'Daily briefing'} market message failed:`, message.description);
+  }
+
+  return { charts, message };
+}
+
 export default {
   /**
    * HTTP 요청 핸들러 (텔레그램 웹훅 + 테스트 엔드포인트)
@@ -43,20 +82,31 @@ export default {
     // 테스트용 엔드포인트: GET /test
     if (request.method === 'GET' && url.pathname === '/test') {
       try {
-        assertTelegramToken(env);
-        assertTelegramDefaultChatId(env);
-        const bot = createTelegramBot(env);
+        const result = await sendDailyBriefing(env, { logPrefix: 'HTTP /test' });
 
-        // 1. 차트 이미지 전송
-        const charts = await getAllChartUrls();
-        await bot.sendChartImages(charts);
+        return new Response(JSON.stringify({
+          message: result.message,
+          charts: result.charts,
+        }, null, 2), {
+          status: result.message.ok ? 200 : 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch (error) {
+        return new Response(`Error: ${error}`, { status: 500 });
+      }
+    }
 
-        // 2. 일일 시장 정보 전송
-        const marketSummary = await getDailyMarketSummary();
-        const result = await bot.sendDailyMarketMessage(marketSummary);
+    // Cron과 동일한 발송 로직을 수동 실행하는 테스트 엔드포인트
+    if (request.method === 'GET' && url.pathname === '/test-scheduled') {
+      try {
+        const result = await sendDailyBriefing(env, { logPrefix: 'HTTP /test-scheduled' });
 
-        return new Response(JSON.stringify({ message: result, charts }, null, 2), {
-          status: result.ok ? 200 : 500,
+        return new Response(JSON.stringify({
+          trigger: 'manual-scheduled-test',
+          message: result.message,
+          charts: result.charts,
+        }, null, 2), {
+          status: result.message.ok ? 200 : 500,
           headers: { 'Content-Type': 'application/json' },
         });
       } catch (error) {
@@ -99,13 +149,10 @@ export default {
 
       // "now" 명령어: 일일 브리핑 즉시 발송
       if (command === 'now') {
-        // 1. 차트 이미지 전송
-        const charts = await getAllChartUrls();
-        await bot.sendChartImages(charts, chatId);
-
-        // 2. 일일 시장 정보 전송
-        const marketSummary = await getDailyMarketSummary();
-        await bot.sendDailyMarketMessage(marketSummary, chatId);
+        await sendDailyBriefing(env, {
+          chatId,
+          logPrefix: 'Telegram now',
+        });
 
         return new Response('OK', { status: 200 });
       }
@@ -221,30 +268,7 @@ export default {
 
     ctx.waitUntil((async () => {
       try {
-        assertTelegramToken(env);
-        assertTelegramDefaultChatId(env);
-        const bot = createTelegramBot(env);
-
-        const [charts, marketSummary] = await Promise.all([
-          getAllChartUrls(),
-          getDailyMarketSummary(),
-        ]);
-
-        // 1. 차트 이미지 전송
-        await bot.sendChartImages(charts);
-        console.log('Chart images send attempted:', {
-          kospi: !!charts.kospi,
-          usd: !!charts.usd,
-        });
-
-        // 2. 일일 시장 정보 전송
-        const result = await bot.sendDailyMarketMessage(marketSummary);
-
-        if (result.ok) {
-          console.log('Daily market message sent successfully');
-        } else {
-          console.error('Failed to send daily market message:', result.description);
-        }
+        await sendDailyBriefing(env, { logPrefix: 'Scheduled task' });
       } catch (error) {
         console.error('Scheduled task error:', error);
       }
