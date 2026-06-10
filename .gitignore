@@ -5,6 +5,7 @@ node_modules/
 .wrangler/
 
 # Environment variables (민감한 정보)
+.env
 .dev.vars
 
 # OS
@@ -18,4 +19,3 @@ node_modules/
 
 # Build
 dist/
-
