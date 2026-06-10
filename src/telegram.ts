@@ -28,6 +28,10 @@ export interface TelegramMessage {
   chat: {
     id: number;
     type: string;
+    title?: string;
+    username?: string;
+    first_name?: string;
+    last_name?: string;
   };
   date: number;
   text?: string;

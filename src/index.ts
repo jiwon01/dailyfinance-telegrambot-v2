@@ -132,6 +132,17 @@ export default {
         return new Response('OK', { status: 200 });
       }
 
+      console.log('Telegram webhook chat:', {
+        updateId: parsedUpdate.update_id,
+        messageId: message.message_id,
+        chatId: message.chat.id,
+        chatType: message.chat.type,
+        chatTitle: message.chat.title,
+        chatUsername: message.chat.username,
+        fromId: message.from?.id,
+        fromUsername: message.from?.username,
+      });
+
       const rawCommand = message.text.trim();
       const command = rawCommand.toLowerCase();
       const chatId = message.chat.id.toString();
