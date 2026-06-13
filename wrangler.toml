@@ -8,7 +8,7 @@ compatibility_date = "2024-01-01"
 
 # 스케줄 트리거 (한국 시간 기준 오후 5시 = UTC 08:00)
 [triggers]
-crons = ["0 8 * * 1-5"]  # 평일 UTC 08:00 (KST 17:00)
+crons = ["0 8 * * mon-fri"]  # 평일 UTC 08:00 (KST 17:00)
 
 # 개발 환경 설정
 [env.dev]

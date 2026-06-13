@@ -116,7 +116,7 @@ curl https://dailyfinance-telegrambot.<YOUR_SUBDOMAIN>.workers.dev/test
 
 ```toml
 [triggers]
-crons = ["0 8 * * 1-5"]  # 평일 UTC 08:00 (KST 17:00)
+crons = ["0 8 * * mon-fri"]  # 평일 UTC 08:00 (KST 17:00)
 ```
 
 ## 데이터 소스
