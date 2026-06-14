@@ -11,10 +11,11 @@ import {
   getDailyMarketSummary,
   getFinnhubMarketData,
   getMarketData,
+  getNasdaqCloseStatus,
   parseCommand,
   parseSearchCommand,
 } from './scraper';
-import { getAllChartUrls } from './chart';
+import { getAllChartUrls, getNasdaqThirtyDayChartUrl } from './chart';
 
 // 환경변수 타입 확장
 interface Env extends TelegramEnv {
@@ -25,6 +26,14 @@ interface DailyBriefingOptions {
   chatId?: string;
   logPrefix?: string;
 }
+
+type ScheduledJobType = 'daily-briefing' | 'nasdaq-close-status' | 'unknown';
+
+const DAILY_BRIEFING_CRON = '0 8 * * mon-fri';
+const NASDAQ_CLOSE_STATUS_CRONS = new Set([
+  '10 20 * * mon-fri',
+  '10 21 * * mon-fri',
+]);
 
 function assertTelegramToken(env: TelegramEnv): void {
   if (!env.TELEGRAM_BOT_TOKEN) {
@@ -72,6 +81,88 @@ async function sendDailyBriefing(env: Env, options: DailyBriefingOptions = {}) {
   return { charts, message };
 }
 
+function getScheduledJobType(cron?: string): ScheduledJobType {
+  if (cron === DAILY_BRIEFING_CRON) {
+    return 'daily-briefing';
+  }
+
+  if (cron && NASDAQ_CLOSE_STATUS_CRONS.has(cron)) {
+    return 'nasdaq-close-status';
+  }
+
+  return 'unknown';
+}
+
+function getNewYorkTimeParts(timestamp: number): { weekday: string; hour: number; minute: number } {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(new Date(timestamp));
+  const getPart = (type: string) => parts.find(part => part.type === type)?.value || '';
+
+  return {
+    weekday: getPart('weekday'),
+    hour: Number(getPart('hour')),
+    minute: Number(getPart('minute')),
+  };
+}
+
+function isNasdaqCloseReportTime(timestamp: number): boolean {
+  const { weekday, hour, minute } = getNewYorkTimeParts(timestamp);
+
+  return weekday !== 'Sat' && weekday !== 'Sun' && hour === 16 && minute === 10;
+}
+
+async function sendNasdaqCloseStatus(env: Env, options: DailyBriefingOptions = {}) {
+  assertTelegramToken(env);
+
+  if (!options.chatId) {
+    assertTelegramDefaultChatId(env);
+  }
+
+  const bot = createTelegramBot({
+    TELEGRAM_BOT_TOKEN: env.TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID: env.TELEGRAM_CHAT_ID || options.chatId || '',
+  });
+
+  const [chartUrl, nasdaqStatus] = await Promise.all([
+    getNasdaqThirtyDayChartUrl(),
+    getNasdaqCloseStatus(),
+  ]);
+
+  let chartMessage = null;
+  if (chartUrl) {
+    chartMessage = await bot.sendPhoto(chartUrl, '<b>📈 나스닥 최근 30거래일 추이</b>', options.chatId);
+
+    if (chartMessage.ok) {
+      console.log(`${options.logPrefix || 'NASDAQ close status'} chart image sent successfully`);
+    } else {
+      console.error(`${options.logPrefix || 'NASDAQ close status'} chart image failed:`, chartMessage.description);
+    }
+  } else {
+    console.warn(`${options.logPrefix || 'NASDAQ close status'} chart image skipped: no chart URL`);
+  }
+
+  if (!nasdaqStatus) {
+    throw new Error('Failed to fetch NASDAQ close status');
+  }
+
+  const message = await bot.sendNasdaqCloseStatusMessage(nasdaqStatus, options.chatId);
+
+  if (message.ok) {
+    console.log(`${options.logPrefix || 'NASDAQ close status'} message sent successfully`);
+  } else {
+    console.error(`${options.logPrefix || 'NASDAQ close status'} message failed:`, message.description);
+  }
+
+  return { chartUrl, chartMessage, message, nasdaqStatus };
+}
+
 export default {
   /**
    * HTTP 요청 핸들러 (텔레그램 웹훅 + 테스트 엔드포인트)
@@ -105,6 +196,26 @@ export default {
           trigger: 'manual-scheduled-test',
           message: result.message,
           charts: result.charts,
+        }, null, 2), {
+          status: result.message.ok ? 200 : 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch (error) {
+        return new Response(`Error: ${error}`, { status: 500 });
+      }
+    }
+
+    // 나스닥 장마감 현황 발송 로직을 수동 실행하는 테스트 엔드포인트
+    if (request.method === 'GET' && url.pathname === '/test-nasdaq-close') {
+      try {
+        const result = await sendNasdaqCloseStatus(env, { logPrefix: 'HTTP /test-nasdaq-close' });
+
+        return new Response(JSON.stringify({
+          trigger: 'manual-nasdaq-close-test',
+          chartGenerated: !!result.chartUrl,
+          chartMessage: result.chartMessage,
+          message: result.message,
+          nasdaqStatus: result.nasdaqStatus,
         }, null, 2), {
           status: result.message.ok ? 200 : 500,
           headers: { 'Content-Type': 'application/json' },
@@ -275,11 +386,31 @@ export default {
    * 스케줄 트리거 핸들러 (Cron)
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    console.log('Scheduled event triggered:', new Date(event.scheduledTime).toISOString());
+    const jobType = getScheduledJobType(event.cron);
+    console.log('Scheduled event triggered:', {
+      cron: event.cron,
+      scheduledTime: new Date(event.scheduledTime).toISOString(),
+      jobType,
+    });
 
     ctx.waitUntil((async () => {
       try {
-        await sendDailyBriefing(env, { logPrefix: 'Scheduled task' });
+        if (jobType === 'daily-briefing') {
+          await sendDailyBriefing(env, { logPrefix: 'Scheduled daily briefing' });
+          return;
+        }
+
+        if (jobType === 'nasdaq-close-status') {
+          if (!isNasdaqCloseReportTime(event.scheduledTime)) {
+            console.log('Skipping NASDAQ close status outside 16:10 America/New_York');
+            return;
+          }
+
+          await sendNasdaqCloseStatus(env, { logPrefix: 'Scheduled NASDAQ close status' });
+          return;
+        }
+
+        console.warn('Unknown scheduled cron skipped:', event.cron);
       } catch (error) {
         console.error('Scheduled task error:', error);
       }
