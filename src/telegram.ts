@@ -5,6 +5,9 @@
 import { ChangeInfo, DailyMarketSummary, MarketSummaryItem } from './scraper';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
+const TELEGRAM_MAX_RETRIES = 3;
+const TELEGRAM_MAX_ATTEMPTS = TELEGRAM_MAX_RETRIES + 1;
+const TELEGRAM_RETRY_BASE_DELAY_MS = 500;
 
 export interface TelegramEnv {
   TELEGRAM_BOT_TOKEN: string;
@@ -15,6 +18,12 @@ export interface SendMessageOptions {
   parseMode?: 'HTML' | 'Markdown' | 'MarkdownV2';
   disableWebPagePreview?: boolean;
   disableNotification?: boolean;
+}
+
+export interface SendRichMessageOptions {
+  disableNotification?: boolean;
+  isRtl?: boolean;
+  skipEntityDetection?: boolean;
 }
 
 export interface TelegramMessage {
@@ -35,6 +44,7 @@ export interface TelegramMessage {
   };
   date: number;
   text?: string;
+  rich_message?: unknown;
 }
 
 export interface TelegramUpdate {
@@ -46,6 +56,21 @@ export interface TelegramResponse<T> {
   ok: boolean;
   result?: T;
   description?: string;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function shouldRetryTelegramResponse(response: TelegramResponse<unknown>): boolean {
+  const description = response.description || '';
+
+  return (
+    description.includes('HTTP 5') ||
+    description.includes('non-JSON response (5') ||
+    description.includes('error code: 520') ||
+    description.includes('fetch failed')
+  );
 }
 
 /**
@@ -80,13 +105,17 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
-/**
- * 시장 항목을 포맷팅
- */
-function formatMarketItem(emoji: string, label: string, item: MarketSummaryItem): string {
+function formatMarketTableRow(label: string, item: MarketSummaryItem): string {
   const value = item.value ?? 'N/A';
-  const changeText = formatChange(item.change);
-  return `${emoji} ${label}: ${value}${changeText}`;
+  const changeText = formatChange(item.change) || '➖';
+
+  return [
+    '<tr>',
+    `<th align="left">${escapeHtml(label)}</th>`,
+    `<td align="right"><b>${escapeHtml(value)}</b></td>`,
+    `<td align="right">${escapeHtml(changeText.trim())}</td>`,
+    '</tr>',
+  ].join('');
 }
 
 /**
@@ -110,15 +139,67 @@ export class TelegramBot {
   ): Promise<TelegramResponse<T>> {
     const url = `${TELEGRAM_API_BASE}/bot${this.token}/${method}`;
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(params),
-    });
+    for (let attempt = 1; attempt <= TELEGRAM_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(params),
+        });
 
-    return response.json() as Promise<TelegramResponse<T>>;
+        const rawBody = await response.text();
+        let parsed: TelegramResponse<T>;
+
+        try {
+          parsed = JSON.parse(rawBody) as TelegramResponse<T>;
+        } catch {
+          const bodyPreview = rawBody.slice(0, 200) || '<empty body>';
+          console.error(`Telegram API returned non-JSON response for ${method}:`, {
+            attempt,
+            status: response.status,
+            statusText: response.statusText,
+            body: bodyPreview,
+          });
+
+          parsed = {
+            ok: false,
+            description: `Telegram API ${method} returned non-JSON response (${response.status}): ${bodyPreview}`,
+          };
+        }
+
+        if (parsed.ok || attempt === TELEGRAM_MAX_ATTEMPTS || !shouldRetryTelegramResponse(parsed)) {
+          return parsed;
+        }
+
+        console.warn(`Retrying Telegram API ${method} after failed response:`, {
+          attempt,
+          description: parsed.description,
+        });
+      } catch (error) {
+        const description = `Telegram API ${method} fetch failed: ${String(error)}`;
+
+        if (attempt === TELEGRAM_MAX_ATTEMPTS) {
+          return {
+            ok: false,
+            description,
+          };
+        }
+
+        console.warn(`Retrying Telegram API ${method} after fetch error:`, {
+          attempt,
+          error: String(error),
+        });
+      }
+
+      await delay(TELEGRAM_RETRY_BASE_DELAY_MS * attempt);
+    }
+
+    return {
+      ok: false,
+      description: `Telegram API ${method} failed after ${TELEGRAM_MAX_ATTEMPTS} attempts`,
+    };
   }
 
   /**
@@ -141,32 +222,74 @@ export class TelegramBot {
   }
 
   /**
-   * 일일 시장 정보 메시지 전송
+   * 리치 메시지 전송
    */
-  async sendDailyMarketMessage(data: DailyMarketSummary, chatId?: string): Promise<TelegramResponse<TelegramMessage>> {
-    const message = this.formatDailyMarketMessage(data);
-    return this.sendMessage(message, {}, chatId);
+  async sendRichMessage(
+    html: string,
+    options: SendRichMessageOptions = {},
+    chatId?: string
+  ): Promise<TelegramResponse<TelegramMessage>> {
+    const richMessage: Record<string, unknown> = {
+      html,
+    };
+
+    if (options.isRtl !== undefined) {
+      richMessage.is_rtl = options.isRtl;
+    }
+
+    if (options.skipEntityDetection !== undefined) {
+      richMessage.skip_entity_detection = options.skipEntityDetection;
+    }
+
+    const params: Record<string, unknown> = {
+      chat_id: chatId || this.defaultChatId,
+      rich_message: richMessage,
+      disable_notification: options.disableNotification ?? true,
+    };
+
+    return this.callApi<TelegramMessage>('sendRichMessage', params);
   }
 
   /**
-   * 일일 시장 정보 메시지 포맷팅
+   * 일일 시장 정보 메시지 전송
    */
-  private formatDailyMarketMessage(data: DailyMarketSummary): string {
-    const lines = [
-      '<b>📊 일일 시장 상황</b>',
-      '',
-      formatMarketItem('🇰🇷', '코스피', data.kospi),
-      formatMarketItem('🇰🇷', '코스닥', data.kosdaq),
-      '',
-      formatMarketItem('💵', 'USD', data.usd),
-      formatMarketItem('💶', 'EUR', data.eur),
-      formatMarketItem('💴', 'JPY', data.jpy),
-      formatMarketItem('🇬🇧', 'GBP', data.gbp),
-      formatMarketItem('🇨🇭', 'CHF', data.chf),
-      formatMarketItem('🇨🇳', 'CNY', data.cny),
-    ];
+  async sendDailyMarketMessage(data: DailyMarketSummary, chatId?: string): Promise<TelegramResponse<TelegramMessage>> {
+    const message = this.formatDailyMarketRichMessage(data);
+    return this.sendRichMessage(message, {}, chatId);
+  }
 
-    return lines.join('\n');
+  /**
+   * 일일 시장 정보 리치 메시지 포맷팅
+   */
+  private formatDailyMarketRichMessage(data: DailyMarketSummary): string {
+    const indexRows = [
+      formatMarketTableRow('🇰🇷 코스피', data.kospi),
+      formatMarketTableRow('🇰🇷 코스닥', data.kosdaq),
+    ].join('');
+
+    const exchangeRows = [
+      formatMarketTableRow('💵 USD/KRW', data.usd),
+      formatMarketTableRow('💶 EUR/KRW', data.eur),
+      formatMarketTableRow('💴 JPY/KRW', data.jpy),
+      formatMarketTableRow('🇬🇧 GBP/KRW', data.gbp),
+      formatMarketTableRow('🇨🇭 CHF/KRW', data.chf),
+      formatMarketTableRow('🇨🇳 CNY/KRW', data.cny),
+    ].join('');
+
+    return [
+      '<h2>📊 일일 시장 상황</h2>',
+      '<table bordered striped>',
+      '<caption>국내 지수</caption>',
+      '<tr><th align="left">시장</th><th align="right">현재가</th><th align="right">변동</th></tr>',
+      indexRows,
+      '</table>',
+      '<hr/>',
+      '<table bordered striped>',
+      '<caption>주요 환율</caption>',
+      '<tr><th align="left">통화</th><th align="right">현재가</th><th align="right">변동</th></tr>',
+      exchangeRows,
+      '</table>',
+    ].join('');
   }
 
   /**
@@ -185,18 +308,18 @@ export class TelegramBot {
     const safeMarketName = escapeHtml(marketName);
     const safeValue = escapeHtml(value);
     const messageLines = [
-      `@${safeUsername}`,
-      `${safeMarketName}의 현재 시세는 <b>${safeValue}</b>${changeText} 입니다.`,
+      `<h3>${safeMarketName}</h3>`,
+      `<p>@${safeUsername} 현재 시세는 <b>${safeValue}</b>${escapeHtml(changeText)} 입니다.</p>`,
     ];
 
     if (sourceUrl) {
       const safeSourceUrl = escapeHtml(sourceUrl);
-      messageLines.push(`<a href="${safeSourceUrl}"><i>자세히 보기</i></a>`);
+      messageLines.push(`<p><a href="${safeSourceUrl}"><i>자세히 보기</i></a></p>`);
     }
 
-    const message = messageLines.join('\n');
+    const message = messageLines.join('');
 
-    return this.sendMessage(message, {}, chatId);
+    return this.sendRichMessage(message, {}, chatId);
   }
 
   /**
@@ -229,16 +352,24 @@ export class TelegramBot {
     usd: string | null;
   }, chatId?: string): Promise<void> {
     if (charts.kospi) {
-      const res = await this.sendPhoto(charts.kospi, '<b>📈 코스피 7일 추이</b>', chatId);
-      if (!res.ok) {
-        console.error('Failed to send KOSPI chart image:', res.description);
+      try {
+        const res = await this.sendPhoto(charts.kospi, '<b>📈 코스피 7일 추이</b>', chatId);
+        if (!res.ok) {
+          console.error('Failed to send KOSPI chart image:', res.description);
+        }
+      } catch (error) {
+        console.error('Failed to send KOSPI chart image:', error);
       }
     }
 
     if (charts.usd) {
-      const res = await this.sendPhoto(charts.usd, '<b>💵 USD/KRW 환율 7일 추이</b>', chatId);
-      if (!res.ok) {
-        console.error('Failed to send USD chart image:', res.description);
+      try {
+        const res = await this.sendPhoto(charts.usd, '<b>💵 USD/KRW 환율 7일 추이</b>', chatId);
+        if (!res.ok) {
+          console.error('Failed to send USD chart image:', res.description);
+        }
+      } catch (error) {
+        console.error('Failed to send USD chart image:', error);
       }
     }
   }
