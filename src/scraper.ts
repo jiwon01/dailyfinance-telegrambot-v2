@@ -7,8 +7,12 @@ const API_URLS = {
   KOSPI: 'https://polling.finance.naver.com/api/realtime/domestic/index/KOSPI',
   KOSDAQ: 'https://polling.finance.naver.com/api/realtime/domestic/index/KOSDAQ',
   NASDAQ: 'https://polling.finance.naver.com/api/realtime/worldstock/index/.IXIC',
+  NASDAQ_STATUS: 'https://stock.naver.com/api/polling/worldstock/index?reutersCodes=.IXIC',
+  NASDAQ_RECENT_PRICES: 'https://stock.naver.com/api/securityService/index/.IXIC/price?page=1&pageSize=30',
   EXCHANGE: 'https://m.stock.naver.com/front-api/marketIndex/exchange/new',
 } as const;
+
+export const NASDAQ_SOURCE_URL = 'https://stock.naver.com/worldstock/index/.IXIC/price';
 
 const FINNHUB_API_BASE = 'https://finnhub.io/api/v1';
 
@@ -44,6 +48,25 @@ export interface MarketData {
   name: string;
   value: string;
   change?: ChangeInfo;
+}
+
+export interface NasdaqCloseStatus {
+  name: string;
+  value: string;
+  change?: ChangeInfo;
+  marketStatus: string;
+  marketStatusText: string;
+  localTradedAt: string;
+  openPrice?: string;
+  highPrice?: string;
+  lowPrice?: string;
+  accumulatedTradingVolume?: string;
+  sourceUrl: string;
+}
+
+export interface NasdaqDailyPrice {
+  date: string;
+  closePrice: number;
 }
 
 // 일일 시장 요약 데이터
@@ -89,6 +112,32 @@ interface DomesticIndexResponse {
     };
     fluctuationsRatio: string;
   }>;
+}
+
+interface NasdaqStatusResponse {
+  datas: NasdaqStatusItem[];
+}
+
+interface NasdaqStatusItem {
+  indexName?: string;
+  closePrice: string;
+  compareToPreviousClosePrice: string;
+  compareToPreviousPrice?: {
+    code: string;
+    text: string;
+    name: string;
+  };
+  fluctuationsRatio: string;
+  openPrice?: string;
+  highPrice?: string;
+  lowPrice?: string;
+  accumulatedTradingVolume?: string;
+  marketStatus?: string;
+  localTradedAt?: string;
+}
+
+interface NasdaqHistoricalPriceItem extends NasdaqStatusItem {
+  localTradedAt: string;
 }
 
 // 환율 데이터
@@ -516,6 +565,42 @@ function codeToDirection(code: string): ChangeDirection {
   }
 }
 
+function normalizeChangePercent(value?: string): string {
+  if (!value) return '';
+  return `${value.replace(/^[+-]/, '')}%`;
+}
+
+function formatMarketStatus(status?: string): string {
+  switch (status) {
+    case 'OPEN':
+      return '장중';
+    case 'PREOPEN':
+      return '개장전';
+    case 'CLOSE':
+      return '장마감';
+    default:
+      return status || '확인 불가';
+  }
+}
+
+function formatNasdaqChartDate(localTradedAt: string): string {
+  const datePart = localTradedAt.slice(0, 10);
+  const [, month, day] = datePart.split('-');
+
+  if (!month || !day) {
+    return localTradedAt.slice(0, 10);
+  }
+
+  return `${month}/${day}`;
+}
+
+function parsePrice(value?: string): number | null {
+  if (!value) return null;
+
+  const parsed = Number(value.replace(/,/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 /**
  * 코스피 지수 가져오기
  */
@@ -592,6 +677,70 @@ export async function getNasdaq(): Promise<MarketSummaryItem> {
   } catch (error) {
     console.error('Error fetching NASDAQ:', error);
     return { value: null };
+  }
+}
+
+/**
+ * 나스닥 장마감 현황 가져오기
+ */
+export async function getNasdaqCloseStatus(): Promise<NasdaqCloseStatus | null> {
+  try {
+    const data = await fetchJson<NasdaqStatusResponse>(API_URLS.NASDAQ_STATUS);
+    const item = data.datas?.[0];
+
+    if (!item?.closePrice) {
+      return null;
+    }
+
+    return {
+      name: item.indexName || '나스닥 종합',
+      value: item.closePrice,
+      change: {
+        direction: codeToDirection(item.compareToPreviousPrice?.code || ''),
+        value: item.compareToPreviousClosePrice || '',
+        percent: normalizeChangePercent(item.fluctuationsRatio),
+      },
+      marketStatus: item.marketStatus || '',
+      marketStatusText: formatMarketStatus(item.marketStatus),
+      localTradedAt: item.localTradedAt || '',
+      openPrice: item.openPrice,
+      highPrice: item.highPrice,
+      lowPrice: item.lowPrice,
+      accumulatedTradingVolume: item.accumulatedTradingVolume,
+      sourceUrl: NASDAQ_SOURCE_URL,
+    };
+  } catch (error) {
+    console.error('Error fetching NASDAQ close status:', error);
+    return null;
+  }
+}
+
+/**
+ * 나스닥 최근 30거래일 종가 가져오기
+ */
+export async function getNasdaqRecentPrices(): Promise<NasdaqDailyPrice[]> {
+  try {
+    const data = await fetchJson<NasdaqHistoricalPriceItem[]>(API_URLS.NASDAQ_RECENT_PRICES);
+
+    return data
+      .slice(0, 30)
+      .reverse()
+      .map(item => {
+        const closePrice = parsePrice(item.closePrice);
+
+        if (closePrice === null) {
+          return null;
+        }
+
+        return {
+          date: formatNasdaqChartDate(item.localTradedAt),
+          closePrice,
+        };
+      })
+      .filter((item): item is NasdaqDailyPrice => item !== null);
+  } catch (error) {
+    console.error('Error fetching NASDAQ recent prices:', error);
+    return [];
   }
 }
 

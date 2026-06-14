@@ -3,6 +3,8 @@
  * QuickChart.io를 사용하여 차트 이미지 생성
  */
 
+import { getNasdaqRecentPrices } from './scraper';
+
 // 네이버 주식 차트 API URL
 const CHART_API_URLS = {
   KOSPI: 'https://api.stock.naver.com/chart/domestic/index/KOSPI?periodType=dayCandle',
@@ -126,7 +128,8 @@ async function fetchUsdChartData(): Promise<ChartDataPoint[]> {
 function generateChartUrl(
   data: ChartDataPoint[],
   title: string,
-  color: string
+  color: string,
+  periodLabel = '최근 7일'
 ): string {
   const labels = data.map(d => d.date);
   const values = data.map(d => d.value);
@@ -134,7 +137,7 @@ function generateChartUrl(
   // 최소/최대값 계산 (여유 있게)
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
-  const padding = (maxValue - minValue) * 0.15;
+  const padding = Math.max((maxValue - minValue) * 0.15, maxValue * 0.01, 1);
   
   const chartConfig = {
     type: 'line',
@@ -156,7 +159,7 @@ function generateChartUrl(
       plugins: {
         title: {
           display: true,
-          text: `${title} - 최근 7일`,
+          text: `${title} - ${periodLabel}`,
           font: { size: 18, weight: 'bold' },
         },
         legend: {
@@ -182,6 +185,28 @@ function generateChartUrl(
 
   const chartJson = encodeURIComponent(JSON.stringify(chartConfig));
   return `${QUICKCHART_URL}?c=${chartJson}&w=600&h=400&bkg=white`;
+}
+
+/**
+ * 나스닥 30거래일 차트 URL 생성
+ */
+export async function getNasdaqThirtyDayChartUrl(): Promise<string | null> {
+  try {
+    const prices = await getNasdaqRecentPrices();
+    console.log('NASDAQ chart data:', prices.length, 'points');
+
+    if (prices.length === 0) return null;
+
+    const data = prices.map(item => ({
+      date: item.date,
+      value: item.closePrice,
+    }));
+
+    return generateChartUrl(data, '나스닥 종합 (NASDAQ)', '#16a085', '최근 30거래일');
+  } catch (error) {
+    console.error('Error generating NASDAQ chart:', error);
+    return null;
+  }
 }
 
 /**

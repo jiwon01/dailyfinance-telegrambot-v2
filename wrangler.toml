@@ -6,9 +6,16 @@ compatibility_date = "2024-01-01"
 # wrangler secret put TELEGRAM_BOT_TOKEN
 # wrangler secret put TELEGRAM_CHAT_ID
 
-# 스케줄 트리거 (한국 시간 기준 오후 5시 = UTC 08:00)
+# 스케줄 트리거
+# - 평일 UTC 08:00: 한국 시간 오후 5시 일일 브리핑
+# - 평일 UTC 20:10/21:10: 나스닥 장마감 10분 후 후보 시간
+#   (미국 DST 대응을 위해 둘 다 등록하고 코드에서 America/New_York 16:10 여부 확인)
 [triggers]
-crons = ["0 8 * * mon-fri"]  # 평일 UTC 08:00 (KST 17:00)
+crons = [
+  "0 8 * * mon-fri",
+  "10 20 * * mon-fri",
+  "10 21 * * mon-fri"
+]
 
 # 개발 환경 설정
 [env.dev]

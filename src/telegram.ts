@@ -2,7 +2,7 @@
  * 텔레그램 Bot API 모듈
  */
 
-import { ChangeInfo, DailyMarketSummary, MarketSummaryItem } from './scraper';
+import { ChangeInfo, DailyMarketSummary, MarketSummaryItem, NasdaqCloseStatus } from './scraper';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const TELEGRAM_MAX_RETRIES = 3;
@@ -116,6 +116,31 @@ function formatMarketTableRow(label: string, item: MarketSummaryItem): string {
     `<td align="right">${escapeHtml(changeText.trim())}</td>`,
     '</tr>',
   ].join('');
+}
+
+function formatTableKeyValueRow(label: string, value: string, bold = false): string {
+  const safeValue = bold ? `<b>${escapeHtml(value)}</b>` : escapeHtml(value);
+
+  return [
+    '<tr>',
+    `<th align="left">${escapeHtml(label)}</th>`,
+    `<td align="right">${safeValue}</td>`,
+    '</tr>',
+  ].join('');
+}
+
+function formatNasdaqLocalTime(localTradedAt: string): string {
+  if (!localTradedAt) {
+    return '확인 불가';
+  }
+
+  const match = localTradedAt.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!match) {
+    return localTradedAt;
+  }
+
+  const [, year, month, day, hour, minute] = match;
+  return `${year}-${month}-${day} ${hour}:${minute} ET`;
 }
 
 /**
@@ -259,6 +284,17 @@ export class TelegramBot {
   }
 
   /**
+   * 나스닥 장마감 현황 메시지 전송
+   */
+  async sendNasdaqCloseStatusMessage(
+    data: NasdaqCloseStatus,
+    chatId?: string
+  ): Promise<TelegramResponse<TelegramMessage>> {
+    const message = this.formatNasdaqCloseStatusRichMessage(data);
+    return this.sendRichMessage(message, {}, chatId);
+  }
+
+  /**
    * 일일 시장 정보 리치 메시지 포맷팅
    */
   private formatDailyMarketRichMessage(data: DailyMarketSummary): string {
@@ -289,6 +325,36 @@ export class TelegramBot {
       '<tr><th align="left">통화</th><th align="right">현재가</th><th align="right">변동</th></tr>',
       exchangeRows,
       '</table>',
+    ].join('');
+  }
+
+  /**
+   * 나스닥 장마감 현황 리치 메시지 포맷팅
+   */
+  private formatNasdaqCloseStatusRichMessage(data: NasdaqCloseStatus): string {
+    const changeText = formatChange(data.change).trim() || '➖';
+    const rows = [
+      formatTableKeyValueRow('당일 시세', data.value, true),
+      formatTableKeyValueRow('전일 대비', changeText),
+      formatTableKeyValueRow('장 상태', data.marketStatusText),
+      formatTableKeyValueRow('현지 기준', formatNasdaqLocalTime(data.localTradedAt)),
+    ];
+
+    if (data.openPrice && data.highPrice && data.lowPrice) {
+      rows.push(formatTableKeyValueRow('시가/고가/저가', `${data.openPrice} / ${data.highPrice} / ${data.lowPrice}`));
+    }
+
+    if (data.accumulatedTradingVolume) {
+      rows.push(formatTableKeyValueRow('거래량', data.accumulatedTradingVolume));
+    }
+
+    return [
+      '<h3>📈 나스닥 장마감 현황</h3>',
+      '<p>정규장 종료 10분 후 기준입니다.</p>',
+      '<table bordered striped>',
+      rows.join(''),
+      '</table>',
+      `<p><a href="${escapeHtml(data.sourceUrl)}"><i>자세히 보기</i></a></p>`,
     ].join('');
   }
 
