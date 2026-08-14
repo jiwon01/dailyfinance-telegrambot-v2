@@ -166,7 +166,7 @@ npx tsc --noEmit       # 타입 체크 — 이 저장소의 유일한 자동 검
 - `GET /test-scheduled` — `/test`와 동일한 로직. Cron 경로 수동 실행용 별칭
 - `GET /test-nasdaq-close` — 나스닥 장마감 현황 + 30거래일 차트 발송
 
-텔레그램 명령어 `now`도 일일 브리핑을 호출한다. 나스닥 장마감 현황에는 대응하는 채팅 명령어가 없다.
+텔레그램 명령어 `/now`도 일일 브리핑을 호출한다. `/nasdaq_close`는 나스닥 장마감 현황을 호출한다.
 
 ### 시크릿
 
@@ -175,7 +175,7 @@ npx tsc --noEmit       # 타입 체크 — 이 저장소의 유일한 자동 검
 ```bash
 npx wrangler secret put TELEGRAM_BOT_TOKEN   # 필수
 npx wrangler secret put TELEGRAM_CHAT_ID     # 필수 (그룹은 - 로 시작)
-npx wrangler secret put FINNHUB_API_KEY      # ?검색어 기능용
+npx wrangler secret put FINNHUB_API_KEY      # /search 기능용
 ```
 
 ## 아키텍처
@@ -191,8 +191,8 @@ Cloudflare Workers 단일 워커. 빌드 스텝 없이 `src/index.ts`를 wrangle
 
 | 함수 | 호출 경로 |
 |------|-----------|
-| `sendDailyBriefing()` | 일일 Cron, `/test`, `/test-scheduled`, 채팅 명령어 `now` |
-| `sendNasdaqCloseStatus()` | 나스닥 Cron, `/test-nasdaq-close` |
+| `sendDailyBriefing()` | 일일 Cron, `/test`, `/test-scheduled`, 채팅 명령어 `/now` |
+| `sendNasdaqCloseStatus()` | 나스닥 Cron, `/test-nasdaq-close`, 채팅 명령어 `/nasdaq_close` |
 
 발송 로직을 바꾸면 해당 함수를 공유하는 모든 경로에 동시에 반영된다.
 
@@ -201,6 +201,7 @@ Cloudflare Workers 단일 워커. 빌드 스텝 없이 `src/index.ts`를 wrangle
 | 파일 | 책임 |
 |------|------|
 | [src/index.ts](src/index.ts) | 라우팅, 명령어 분기, Cron 디스패치, 오케스트레이션, 에러 처리 |
+| [src/commands.ts](src/commands.ts) | Telegram 명령어 정의, 시세 매핑, 슬래시 명령어 파싱 |
 | [src/scraper.ts](src/scraper.ts) | 네이버 금융 / Finnhub 데이터 조회 및 정규화 |
 | [src/chart.ts](src/chart.ts) | 시계열 데이터 → QuickChart.io URL 생성 |
 | [src/telegram.ts](src/telegram.ts) | Telegram Bot API 호출, 재시도, HTML 메시지 포맷팅 |
@@ -231,9 +232,11 @@ Cloudflare Cron은 UTC로만 평가된다. 나스닥 정규장 마감 10분 후(
 
 ### 명령어 분기 순서 (src/index.ts `fetch`)
 
-`now` → `?`로 시작하는 Finnhub 검색 → `parseCommand()`의 정적 매핑. **매칭되지 않는 메시지는 조용히 무시**하고 200을 반환한다(그룹 채팅에서 잡담에 반응하지 않기 위함). 웹훅 에러도 항상 200을 반환한다 — 텔레그램 재시도를 막기 위한 의도된 동작이다.
+`parseSlashCommand()` → `/now` → `/nasdaq_close` → `/help` → `/search` → `MARKET_COMMANDS` 시세 매핑 순서다. **슬래시 명령어가 아니거나 매칭되지 않는 메시지는 조용히 무시**하고 200을 반환한다(그룹 채팅에서 잡담에 반응하지 않기 위함). 그룹 채팅의 `/kospi@BotName` 형식도 지원한다. 웹훅 에러도 항상 200을 반환한다 — 텔레그램 재시도를 막기 위한 의도된 동작이다.
 
-새 시세 명령어를 추가하려면 `scraper.ts`의 `MarketType`, `commandMap`, `marketNames`, `fetchers` 네 곳을 함께 갱신해야 한다.
+새 시세 명령어를 추가하려면 `commands.ts`의 `BOT_COMMANDS`와 `MARKET_COMMANDS`, `scraper.ts`의 `MarketType`, `marketNames`, `fetchers`를 함께 갱신해야 한다. `/help`는 `BOT_COMMANDS`를 사용하므로 메뉴 설명과 안내 메시지가 같은 원본을 공유한다.
+
+`GET /setup-commands`는 `setMyCommands`로 명령어 메뉴를 등록하고 `getMyCommands`로 결과를 확인한다. 실제 Telegram 외부 상태를 변경하므로 사용자 승인 없이 호출하지 않는다. `scripts/set-commands.sh`는 이 엔드포인트의 얇은 래퍼다.
 
 ### 응답 채팅방 규칙
 
@@ -247,7 +250,7 @@ Cloudflare Cron은 UTC로만 평가된다. 나스닥 정규장 마감 10분 후(
 
 **나스닥은 엔드포인트가 세 갈래다.** 목적에 따라 다른 API를 쓰므로 혼동하지 않도록 주의한다:
 
-- 채팅 명령어 `나스닥` → `getNasdaq()` → `polling.finance.naver.com/api/realtime/worldstock/index/.IXIC`
+- 채팅 명령어 `/nasdaq` → `getNasdaq()` → `polling.finance.naver.com/api/realtime/worldstock/index/.IXIC`
 - 장마감 현황 → `getNasdaqCloseStatus()` → `stock.naver.com/api/polling/worldstock/index?reutersCodes=.IXIC`
 - 30거래일 차트 → `getNasdaqRecentPrices()` → `stock.naver.com/api/securityService/index/.IXIC/price?page=1&pageSize=30` (최신순 반환이므로 `reverse()` 필요, `closePrice`는 쉼표 포함 문자열)
 
@@ -259,13 +262,15 @@ Cloudflare Cron은 UTC로만 평가된다. 나스닥 정규장 마감 10분 후(
 
 **환율은 단일 엔드포인트에서 전량 조회**된다. `getExchangeData()`가 모듈 전역 변수로 60초 캐싱하며, `getUsd()` 등은 그 결과에서 통화 코드를 골라내는 얇은 래퍼다. 캐시는 Worker isolate 단위이므로 인스턴스 간 공유되지 않는다.
 
-**Finnhub는 지수에 취약하다.** `^IXIC`는 CFD 구독이 필요하고 `.IXIC`/`IXIC`는 0값을 반환하며 candle API는 403이다. 그래서 나스닥 지수는 Finnhub 대신 네이버를 쓴다. `?검색어` 조회는 직접 심볼 후보(`buildDirectSymbolCandidates`) → `/search` 스코어링 → `/quote` + `/stock/profile2` 순으로 폴백한다.
+**Finnhub는 지수에 취약하다.** `^IXIC`는 CFD 구독이 필요하고 `.IXIC`/`IXIC`는 0값을 반환하며 candle API는 403이다. 그래서 나스닥 지수는 Finnhub 대신 네이버를 쓴다. `/search` 조회는 직접 심볼 후보(`buildDirectSymbolCandidates`) → Finnhub `/search` 스코어링 → `/quote` + `/stock/profile2` 순으로 폴백한다.
 
 **메시지는 `sendRichMessage`로 보낸다.** 표준 `sendMessage`(HTML parse_mode)와 별개로, `rich_message.html`에 `<table bordered striped>`, `<h2>`, `<caption>`, `<hr/>` 같은 태그를 담는 방식이다. 사용자 입력이나 API 값은 반드시 `escapeHtml()`을 통과시킨다. 에러 안내 같은 평문 메시지만 `sendMessage`를 쓴다.
 
 **Telegram API 호출은 자동 재시도된다.** `callApi()`가 5xx / 비-JSON 응답 / fetch 실패에 대해 최대 4회 시도(선형 백오프 500ms×attempt)한다. 개별 메서드에서 재시도를 다시 구현하지 않는다.
 
-**`generateChartUrl()`은 기간 라벨을 인자로 받는다.** 기본값이 `'최근 7일'`이므로 다른 기간의 차트를 추가할 때 네 번째 인자를 넘기지 않으면 제목이 틀린다. y축 패딩은 `Math.max(범위*0.15, 최대값*0.01, 1)`로, 변동이 거의 없는 시계열에서도 선이 납작해지지 않게 하한을 둔다.
+**`generateChartUrl()`은 기간 라벨을 인자로 받는다.** 코스피와 USD/KRW는 `'최근 30일'`, 나스닥은 `'최근 30거래일'`을 명시한다. y축 패딩은 `Math.max(범위*0.15, 최대값*0.01, 1)`로, 변동이 거의 없는 시계열에서도 선이 납작해지지 않게 하한을 둔다.
+
+**USD/KRW 차트 API는 페이지당 10개만 반환한다.** `fetchUsdChartData()`가 `page=1~3`을 병렬 조회해 30개를 합치며, 한 페이지라도 실패하면 불연속 차트를 만들지 않고 빈 배열을 반환한다. 각 페이지는 최신순이므로 합친 뒤 `reverse()`해 오래된 값부터 표시한다.
 
 ## 데이터 소스
 
