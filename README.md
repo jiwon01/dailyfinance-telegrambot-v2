@@ -6,28 +6,31 @@ Cloudflare Workers를 이용한 일일 금융 시장 정보 텔레그램 봇입�
 
 - **자동 알림**: 매일 평일 오후 5시(KST)에 일일 시장 상황 자동 전송
 - **나스닥 장마감 알림**: 나스닥 정규장 종료 10분 후 현황과 최근 30거래일 차트 자동 전송
-- **수동 조회**: 텔레그램 명령어로 개별 시세 조회
+- **30일 차트**: 일일 브리핑에 코스피와 USD/KRW 최근 30개 관측값 차트 첨부
+- **수동 조회**: 텔레그램 슬래시 명령어 메뉴로 개별 시세 조회
 
 ### 지원 시세 정보
 
 | 시세 | 명령어 |
 |------|--------|
-| 코스피 | `코스피`, `kospi`, `KOSPI` |
-| 코스닥 | `코스닥`, `kosdaq`, `KOSDAQ` |
-| 나스닥 | `나스닥`, `nasdaq`, `NASDAQ` |
-| 달러 | `달러`, `usd`, `USD` |
-| 엔화 | `엔화`, `엔`, `jpy`, `JPY` |
-| 유로 | `유로`, `eur`, `EUR` |
-| 파운드 | `파운드`, `gbp`, `GBP` |
-| 스위스프랑 | `스위스프랑`, `프랑`, `chf`, `CHF` |
-| 위안 | `위안`, `중국`, `cny`, `CNY` |
+| 코스피 | `/kospi` |
+| 코스닥 | `/kosdaq` |
+| 나스닥 | `/nasdaq` |
+| 달러 | `/usd` |
+| 엔화 | `/jpy` |
+| 유로 | `/eur` |
+| 파운드 | `/gbp` |
+| 스위스프랑 | `/chf` |
+| 위안 | `/cny` |
 
 ### 특수 명령어
 
 | 명령어 | 설명 |
 |--------|------|
-| `now` | 차트 이미지와 함께 일일 브리핑 즉시 발송 |
-| `?검색어` | Finnhub 기반 전세계 주식/지수/가상화폐 조회 (예: `?AAPL`, `?^GSPC`, `?BTC-USD`) |
+| `/now` | 차트 이미지와 함께 일일 브리핑 즉시 발송 |
+| `/nasdaq_close` | 나스닥 장마감 현황과 최근 30거래일 차트 발송 |
+| `/search 검색어` | Finnhub 기반 전세계 주식/지수/가상화폐 조회 (예: `/search AAPL`) |
+| `/help` | 사용 가능한 명령어 목록 안내 |
 
 ## 설치 및 배포
 
@@ -68,6 +71,23 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
   -d '{"url": "https://dailyfinance-telegrambot.<YOUR_SUBDOMAIN>.workers.dev"}'
 ```
 
+### 5. 텔레그램 명령어 메뉴 등록
+
+배포된 Worker URL 또는 로컬 개발 서버 URL을 지정해 명령어 메뉴를 등록합니다:
+
+```bash
+./scripts/set-commands.sh https://dailyfinance-telegrambot-v2.<YOUR_SUBDOMAIN>.workers.dev
+./scripts/set-commands.sh http://localhost:8787
+```
+
+환경변수도 사용할 수 있습니다:
+
+```bash
+WORKER_BASE_URL=https://dailyfinance-telegrambot-v2.<YOUR_SUBDOMAIN>.workers.dev ./scripts/set-commands.sh
+```
+
+스크립트는 `GET /setup-commands`를 호출해 `setMyCommands`로 13개 명령어를 등록하고 `getMyCommands` 결과를 출력합니다. 이 호출은 Telegram 명령어 메뉴의 외부 상태를 변경합니다.
+
 ## 개발
 
 ### 로컬 개발 서버 실행
@@ -101,9 +121,12 @@ curl https://dailyfinance-telegrambot.<YOUR_SUBDOMAIN>.workers.dev/test-nasdaq-c
 ```
 ├── src/
 │   ├── index.ts      # 메인 워커 (HTTP/Cron 핸들러)
+│   ├── commands.ts   # 슬래시 명령어 정의와 파싱
 │   ├── scraper.ts    # 네이버 금융 API 스크래핑 모듈
 │   ├── chart.ts      # 차트 이미지 생성 모듈 (QuickChart.io)
 │   └── telegram.ts   # 텔레그램 API 모듈
+├── scripts/
+│   └── set-commands.sh # 텔레그램 명령어 메뉴 등록
 ├── wrangler.toml     # Cloudflare Workers 설정
 ├── tsconfig.json     # TypeScript 설정
 └── package.json
@@ -115,7 +138,7 @@ curl https://dailyfinance-telegrambot.<YOUR_SUBDOMAIN>.workers.dev/test-nasdaq-c
 |--------|------|------|
 | `TELEGRAM_BOT_TOKEN` | 텔레그램 봇 토큰 (@BotFather에서 발급) | ✅ |
 | `TELEGRAM_CHAT_ID` | 메시지를 받을 채팅 ID | ✅ |
-| `FINNHUB_API_KEY` | Finnhub API 키 | ✅ (`?검색어` 기능 사용 시) |
+| `FINNHUB_API_KEY` | Finnhub API 키 | ✅ (`/search` 기능 사용 시) |
 
 ## 스케줄 설정
 

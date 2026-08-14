@@ -8,8 +8,11 @@ import { getNasdaqRecentPrices } from './scraper';
 // 네이버 주식 차트 API URL
 const CHART_API_URLS = {
   KOSPI: 'https://api.stock.naver.com/chart/domestic/index/KOSPI?periodType=dayCandle',
-  USD: 'https://m.stock.naver.com/front-api/marketIndex/prices?category=exchange&reutersCode=FX_USDKRW&page=1',
+  USD: 'https://m.stock.naver.com/front-api/marketIndex/prices?category=exchange&reutersCode=FX_USDKRW',
 } as const;
+
+const CHART_DATA_POINT_COUNT = 30;
+const USD_CHART_PAGE_COUNT = 3;
 
 // QuickChart API
 const QUICKCHART_URL = 'https://quickchart.io/chart';
@@ -62,7 +65,7 @@ async function fetchIndexChartData(): Promise<ChartDataPoint[]> {
       return [];
     }
 
-    const recentData = data.priceInfos.slice(-7);
+    const recentData = data.priceInfos.slice(-CHART_DATA_POINT_COUNT);
     
     return recentData.map(item => {
       const dateStr = item.localDate;
@@ -85,27 +88,32 @@ async function fetchIndexChartData(): Promise<ChartDataPoint[]> {
  */
 async function fetchUsdChartData(): Promise<ChartDataPoint[]> {
   try {
-    const response = await fetch(CHART_API_URLS.USD, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-      },
-    });
+    const pages = await Promise.all(
+      Array.from({ length: USD_CHART_PAGE_COUNT }, async (_, index) => {
+        const page = index + 1;
+        const response = await fetch(`${CHART_API_URLS.USD}&page=${page}`, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+          },
+        });
 
-    if (!response.ok) {
-      console.error(`USD API error: ${response.status}`);
-      return [];
-    }
+        if (!response.ok) {
+          throw new Error(`USD API page ${page} error: ${response.status}`);
+        }
 
-    const data = await response.json() as NaverExchangeApiResponse;
-    
-    if (!data.isSuccess || !data.result || data.result.length === 0) {
-      console.error('No USD price data in response');
-      return [];
-    }
+        const data = await response.json() as NaverExchangeApiResponse;
 
-    // 최근 7개 데이터 (최신순으로 정렬되어 있으므로 reverse)
-    const recentData = data.result.slice(0, 7).reverse();
+        if (!data.isSuccess || !data.result || data.result.length === 0) {
+          throw new Error(`No USD price data in page ${page} response`);
+        }
+
+        return data.result;
+      }),
+    );
+
+    // 각 페이지와 전체 배열 모두 최신순이므로 합친 뒤 역순으로 변환한다.
+    const recentData = pages.flat().slice(0, CHART_DATA_POINT_COUNT).reverse();
     
     return recentData.map(item => {
       // localTradedAt: "2025-11-28"
@@ -129,7 +137,7 @@ function generateChartUrl(
   data: ChartDataPoint[],
   title: string,
   color: string,
-  periodLabel = '최근 7일'
+  periodLabel: string,
 ): string {
   const labels = data.map(d => d.date);
   const values = data.map(d => d.value);
@@ -210,7 +218,7 @@ export async function getNasdaqThirtyDayChartUrl(): Promise<string | null> {
 }
 
 /**
- * 코스피 7일 차트 URL 생성
+ * 코스피 30일 차트 URL 생성
  */
 export async function getKospiChartUrl(): Promise<string | null> {
   try {
@@ -219,7 +227,7 @@ export async function getKospiChartUrl(): Promise<string | null> {
     
     if (data.length === 0) return null;
     
-    return generateChartUrl(data, '코스피 (KOSPI)', '#e74c3c');
+    return generateChartUrl(data, '코스피 (KOSPI)', '#e74c3c', '최근 30일');
   } catch (error) {
     console.error('Error generating KOSPI chart:', error);
     return null;
@@ -227,7 +235,7 @@ export async function getKospiChartUrl(): Promise<string | null> {
 }
 
 /**
- * USD 환율 7일 차트 URL 생성
+ * USD 환율 30일 차트 URL 생성
  */
 export async function getUsdChartUrl(): Promise<string | null> {
   try {
@@ -236,7 +244,7 @@ export async function getUsdChartUrl(): Promise<string | null> {
     
     if (data.length === 0) return null;
     
-    return generateChartUrl(data, 'USD/KRW 환율', '#3498db');
+    return generateChartUrl(data, 'USD/KRW 환율', '#3498db', '최근 30일');
   } catch (error) {
     console.error('Error generating USD chart:', error);
     return null;

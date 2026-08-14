@@ -2,7 +2,8 @@
  * 텔레그램 Bot API 모듈
  */
 
-import { ChangeInfo, DailyMarketSummary, MarketSummaryItem, NasdaqCloseStatus } from './scraper';
+import type { ChangeInfo, DailyMarketSummary, MarketSummaryItem, NasdaqCloseStatus } from './scraper';
+import type { BotCommandGroup, BotCommandSpec } from './commands';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const TELEGRAM_MAX_RETRIES = 3;
@@ -57,6 +58,8 @@ export interface TelegramResponse<T> {
   result?: T;
   description?: string;
 }
+
+export type TelegramBotCommand = Pick<BotCommandSpec, 'command' | 'description'>;
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -141,6 +144,30 @@ function formatNasdaqLocalTime(localTradedAt: string): string {
 
   const [, year, month, day, hour, minute] = match;
   return `${year}-${month}-${day} ${hour}:${minute} ET`;
+}
+
+export function formatHelpRichMessage(commands: readonly BotCommandSpec[]): string {
+  const groups: Array<{ group: BotCommandGroup; title: string }> = [
+    { group: 'briefing', title: '시장 브리핑' },
+    { group: 'market', title: '국내외 지수' },
+    { group: 'exchange', title: '환율' },
+    { group: 'search', title: '검색' },
+    { group: 'help', title: '도움말' },
+  ];
+
+  const sections = groups.map(({ group, title }) => {
+    const items = commands
+      .filter(command => command.group === group)
+      .map(command => {
+        const usage = command.command === 'search' ? '/search AAPL' : `/${command.command}`;
+        return `<p><code>${escapeHtml(usage)}</code> - ${escapeHtml(command.description)}</p>`;
+      })
+      .join('');
+
+    return `<h3>${escapeHtml(title)}</h3>${items}`;
+  });
+
+  return ['<h2>📋 사용 가능한 명령어</h2>', ...sections].join('');
 }
 
 /**
@@ -228,6 +255,25 @@ export class TelegramBot {
   }
 
   /**
+   * 텔레그램 명령어 메뉴 등록
+   */
+  async setMyCommands(commands: readonly BotCommandSpec[]): Promise<TelegramResponse<boolean>> {
+    const menuCommands: TelegramBotCommand[] = commands.map(({ command, description }) => ({
+      command,
+      description,
+    }));
+
+    return this.callApi<boolean>('setMyCommands', { commands: menuCommands });
+  }
+
+  /**
+   * 현재 등록된 텔레그램 명령어 메뉴 조회
+   */
+  async getMyCommands(): Promise<TelegramResponse<TelegramBotCommand[]>> {
+    return this.callApi<TelegramBotCommand[]>('getMyCommands', {});
+  }
+
+  /**
    * 메시지 전송
    */
   async sendMessage(
@@ -291,6 +337,17 @@ export class TelegramBot {
     chatId?: string
   ): Promise<TelegramResponse<TelegramMessage>> {
     const message = this.formatNasdaqCloseStatusRichMessage(data);
+    return this.sendRichMessage(message, {}, chatId);
+  }
+
+  /**
+   * 사용 가능한 명령어 안내 전송
+   */
+  async sendHelpMessage(
+    commands: readonly BotCommandSpec[],
+    chatId?: string,
+  ): Promise<TelegramResponse<TelegramMessage>> {
+    const message = formatHelpRichMessage(commands);
     return this.sendRichMessage(message, {}, chatId);
   }
 
@@ -419,7 +476,7 @@ export class TelegramBot {
   }, chatId?: string): Promise<void> {
     if (charts.kospi) {
       try {
-        const res = await this.sendPhoto(charts.kospi, '<b>📈 코스피 7일 추이</b>', chatId);
+        const res = await this.sendPhoto(charts.kospi, '<b>📈 코스피 30일 추이</b>', chatId);
         if (!res.ok) {
           console.error('Failed to send KOSPI chart image:', res.description);
         }
@@ -430,7 +487,7 @@ export class TelegramBot {
 
     if (charts.usd) {
       try {
-        const res = await this.sendPhoto(charts.usd, '<b>💵 USD/KRW 환율 7일 추이</b>', chatId);
+        const res = await this.sendPhoto(charts.usd, '<b>💵 USD/KRW 환율 30일 추이</b>', chatId);
         if (!res.ok) {
           console.error('Failed to send USD chart image:', res.description);
         }
