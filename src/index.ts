@@ -12,10 +12,9 @@ import {
   getFinnhubMarketData,
   getMarketData,
   getNasdaqCloseStatus,
-  parseCommand,
-  parseSearchCommand,
 } from './scraper';
 import { getAllChartUrls, getNasdaqThirtyDayChartUrl } from './chart';
+import { BOT_COMMANDS, MARKET_COMMANDS, parseSlashCommand } from './commands';
 
 // 환경변수 타입 확장
 interface Env extends TelegramEnv {
@@ -170,6 +169,29 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    // 텔레그램 클라이언트의 명령어 메뉴 등록
+    if (request.method === 'GET' && url.pathname === '/setup-commands') {
+      try {
+        assertTelegramToken(env);
+        const bot = createTelegramBot({
+          TELEGRAM_BOT_TOKEN: env.TELEGRAM_BOT_TOKEN,
+          TELEGRAM_CHAT_ID: env.TELEGRAM_CHAT_ID || '',
+        });
+        const setupResult = await bot.setMyCommands(BOT_COMMANDS);
+        const registeredCommands = setupResult.ok ? await bot.getMyCommands() : null;
+
+        return new Response(JSON.stringify({
+          setup: setupResult,
+          registeredCommands,
+        }, null, 2), {
+          status: setupResult.ok && registeredCommands?.ok ? 200 : 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch (error) {
+        return new Response(`Error: ${error}`, { status: 500 });
+      }
+    }
+
     // 테스트용 엔드포인트: GET /test
     if (request.method === 'GET' && url.pathname === '/test') {
       try {
@@ -254,8 +276,7 @@ export default {
         fromUsername: message.from?.username,
       });
 
-      const rawCommand = message.text.trim();
-      const command = rawCommand.toLowerCase();
+      const parsedCommand = parseSlashCommand(message.text);
       const chatId = message.chat.id.toString();
       
       // from이 없는 경우 (채널 메시지, 익명 관리자 등)
@@ -269,23 +290,40 @@ export default {
         TELEGRAM_CHAT_ID: env.TELEGRAM_CHAT_ID || chatId,
       });
 
-      // "now" 명령어: 일일 브리핑 즉시 발송
-      if (command === 'now') {
+      if (!parsedCommand) {
+        // 슬래시 명령어가 아닌 메시지는 조용히 무시
+        return new Response('OK', { status: 200 });
+      }
+
+      if (parsedCommand.name === 'now') {
         await sendDailyBriefing(env, {
           chatId,
-          logPrefix: 'Telegram now',
+          logPrefix: 'Telegram /now',
         });
 
         return new Response('OK', { status: 200 });
       }
 
-      // Finnhub 검색 명령어: ?AAPL, ?^GSPC, ?BTC-USD, ?tesla
-      if (rawCommand.startsWith('?')) {
-        const query = parseSearchCommand(rawCommand);
+      if (parsedCommand.name === 'nasdaq_close') {
+        await sendNasdaqCloseStatus(env, {
+          chatId,
+          logPrefix: 'Telegram /nasdaq_close',
+        });
+
+        return new Response('OK', { status: 200 });
+      }
+
+      if (parsedCommand.name === 'help') {
+        await bot.sendHelpMessage(BOT_COMMANDS, chatId);
+        return new Response('OK', { status: 200 });
+      }
+
+      if (parsedCommand.name === 'search') {
+        const query = parsedCommand.args;
 
         if (!query) {
           await bot.sendMessage(
-            '⚠️ 검색어가 비어 있습니다. 예: ?AAPL, ?^GSPC, ?BTC-USD',
+            '⚠️ 검색어가 비어 있습니다. 예: /search AAPL, /search ^GSPC, /search BTC-USD',
             {},
             chatId,
           );
@@ -305,7 +343,7 @@ export default {
 
         if (finnhubResult.status === 'not_found') {
           await bot.sendMessage(
-            `⚠️ "${query}" 검색 결과가 없습니다.\n예: ?AAPL, ?^GSPC, ?BTC-USD`,
+            `⚠️ "${query}" 검색 결과가 없습니다.\n예: /search AAPL, /search ^GSPC, /search BTC-USD`,
             {},
             chatId,
           );
@@ -333,11 +371,10 @@ export default {
         return new Response('OK', { status: 200 });
       }
 
-      // 명령어 파싱
-      const marketType = parseCommand(rawCommand);
+      const marketType = MARKET_COMMANDS[parsedCommand.name];
 
       if (!marketType) {
-        // 알 수 없는 명령어는 무시
+        // 알 수 없는 슬래시 명령어는 조용히 무시
         return new Response('OK', { status: 200 });
       }
 
