@@ -419,7 +419,7 @@ export class TelegramBot {
   }, chatId?: string): Promise<void> {
     if (charts.kospi) {
       try {
-        const res = await this.sendPhoto(charts.kospi, '<b>📈 코스피 7일 추이</b>', chatId);
+        const res = await this.sendPhoto(charts.kospi, '<b>📈 코스피 30일 추이</b>', chatId);
         if (!res.ok) {
           console.error('Failed to send KOSPI chart image:', res.description);
         }
@@ -430,7 +430,7 @@ export class TelegramBot {
 
     if (charts.usd) {
       try {
-        const res = await this.sendPhoto(charts.usd, '<b>💵 USD/KRW 환율 7일 추이</b>', chatId);
+        const res = await this.sendPhoto(charts.usd, '<b>💵 USD/KRW 환율 30일 추이</b>', chatId);
         if (!res.ok) {
           console.error('Failed to send USD chart image:', res.description);
         }
