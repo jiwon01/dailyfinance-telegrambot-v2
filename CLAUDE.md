@@ -215,7 +215,7 @@ Cloudflare Workers 단일 워커. 빌드 스텝 없이 `src/index.ts`를 wrangle
 `scheduled` 핸들러는 `event.cron` **문자열을 그대로 비교**해서 어떤 작업인지 판별한다:
 
 ```ts
-const DAILY_BRIEFING_CRON = '0 8 * * mon-fri';
+const DAILY_BRIEFING_CRON = '0 11 * * mon-fri';
 const NASDAQ_CLOSE_STATUS_CRONS = new Set(['10 20 * * mon-fri', '10 21 * * mon-fri']);
 ```
 

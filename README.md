@@ -4,7 +4,7 @@ Cloudflare Workers를 이용한 일일 금융 시장 정보 텔레그램 봇입�
 
 ## 기능
 
-- **자동 알림**: 매일 평일 오후 5시(KST)에 일일 시장 상황 자동 전송
+- **자동 알림**: 매일 평일 오후 8시(KST)에 일일 시장 상황 자동 전송
 - **나스닥 장마감 알림**: 나스닥 정규장 종료 10분 후 현황과 최근 30거래일 차트 자동 전송
 - **30일 차트**: 일일 브리핑에 코스피와 USD/KRW 최근 30개 관측값 차트 첨부
 - **수동 조회**: 텔레그램 슬래시 명령어 메뉴로 개별 시세 조회
@@ -147,7 +147,7 @@ curl https://dailyfinance-telegrambot.<YOUR_SUBDOMAIN>.workers.dev/test-nasdaq-c
 ```toml
 [triggers]
 crons = [
-  "0 8 * * mon-fri",       # 평일 UTC 08:00 (KST 17:00)
+  "0 11 * * mon-fri",      # 평일 UTC 11:00 (KST 20:00)
   "10 20 * * mon-fri",    # 나스닥 장마감 10분 후 후보 시간 (미국 DST)
   "10 21 * * mon-fri"     # 나스닥 장마감 10분 후 후보 시간 (미국 표준시)
 ]
