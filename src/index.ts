@@ -28,7 +28,7 @@ interface DailyBriefingOptions {
 
 type ScheduledJobType = 'daily-briefing' | 'nasdaq-close-status' | 'unknown';
 
-const DAILY_BRIEFING_CRON = '0 8 * * mon-fri';
+const DAILY_BRIEFING_CRON = '0 11 * * mon-fri';
 const NASDAQ_CLOSE_STATUS_CRONS = new Set([
   '10 20 * * mon-fri',
   '10 21 * * mon-fri',
